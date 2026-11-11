@@ -12,6 +12,8 @@ which monitor, and keeps track of everything you've picked.
   on its own
 - **History and undo**: step back and forth through up to 100 saved desktop
   layouts, or search and reapply old images
+- **Hotplug restore**: reconnected monitors and restarted renderers get their
+  wallpaper back automatically
 - **Holds**: pause rotation everywhere or on one monitor, indefinitely or for a
   set time (`zpaper hold 2h`)
 - **Favorites and exclusions** without touching your files
@@ -59,6 +61,7 @@ zpaper exclude                           # never rotate to this again
 zpaper history                           # recently shown images
 zpaper use landscapes                    # switch collection
 zpaper status --json
+zpaper refresh                           # reapply the saved layout
 zpaper reload                            # re-read the config
 zpaper --help
 ```

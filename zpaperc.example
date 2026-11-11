@@ -14,6 +14,11 @@ interval = 30m
 backend = auto
 backend_start = true
 
+# awww/swww only: while the daemon runs, put wallpapers back on monitors that are
+# reconnected, newly plugged in, or blanked by a renderer restart. Outputs showing
+# an image are left alone, so changes made outside zpaper are kept.
+hotplug = true
+
 # Supported by the built-in adapters: crop, fit, stretch, no.
 resize = crop
 # Backend-specific argv, parsed without invoking a shell.

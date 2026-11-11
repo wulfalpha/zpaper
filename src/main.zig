@@ -35,7 +35,7 @@ const help = "zpaper " ++ version ++ " — wallpaper rotation with memory\n" ++
     \\  use NAME                  Switch collection until the next schedule change
     \\  schedule [resume]         Inspect schedule / return to it (respecting holds)
     \\  list [NAME]               List images in the active or named collection
-    \\  restore                   Restore saved layout, or choose if none saved
+    \\  restore | refresh         Reapply saved layout, or choose if none saved
     \\  import-legacy [DIR]       Import script history/favorites (default ~/.cache)
     \\  clear-history             Clear image history and layout navigation
     \\  reload | stop             Reload config / stop the daemon
@@ -89,7 +89,7 @@ fn parse(rt: Runtime, a: u.A, argv: []const []const u8) !?ParsedRequest {
         if (!literal and (!chosen or std.mem.startsWith(u8, arg, "--"))) {
             var name = if (std.mem.startsWith(u8, arg, "--")) arg[2..] else arg;
             if (u.eql(name, "undo")) name = "previous";
-            if (u.eql(name, "restore-or-random")) name = "restore";
+            if (u.eql(name, "restore-or-random") or u.eql(name, "refresh")) name = "restore";
             const normalized = try a.dupe(u8, name);
             for (normalized) |*c| if (c.* == '-') {
                 c.* = '_';
@@ -214,6 +214,11 @@ fn daemonLoop(rt: Runtime, a: u.A, paths: ipc.Paths, cfg_path: []const u8, requi
     }
     var retry_at: i64 = 0;
     var schedule_retry_at: i64 = 0;
+    // Connected outputs from the last hotplug check, kept across ticks.
+    var outputs_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer outputs_arena.deinit();
+    var known_outputs: ?[]const []const u8 = null;
+    var hotplug_at: i64 = 0;
     while (!stopping.load(.acquire)) {
         var poll = [_]platform.pollfd{.{ .fd = fd, .events = platform.POLL.IN, .revents = 0 }};
         _ = try platform.poll(&poll, 500);
@@ -306,6 +311,23 @@ fn daemonLoop(rt: Runtime, a: u.A, paths: ipc.Paths, cfg_path: []const u8, requi
             if (scheduled and !e.dirty) schedule_retry_at = now + 5;
         } else if (!forced and now < schedule_retry_at) {
             scheduled = true;
+        }
+        if (cfg.hotplug and now >= hotplug_at) {
+            if (e.reconcile(known_outputs)) |names| {
+                var replacement = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+                const copy = replacement.allocator().alloc([]const u8, names.len) catch null;
+                if (copy) |slots| {
+                    for (names, slots) |name, *slot| slot.* = replacement.allocator().dupe(u8, name) catch "";
+                    outputs_arena.deinit();
+                    outputs_arena = replacement;
+                    known_outputs = slots;
+                } else replacement.deinit();
+                hotplug_at = now + 2;
+            } else |err| {
+                if (err != error.QueryUnsupported) std.log.err("hotplug: {s}", .{if (u.diagnostic.len > 0) u.diagnostic else @errorName(err)});
+                u.diagnostic = "";
+                hotplug_at = now + 15;
+            }
         }
         const active = cfg.effective(cfg.selectedName(e.state.collection)) catch continue;
         if (forced or (!scheduled and active.interval > 0 and now >= e.state.next_due and now >= retry_at)) {

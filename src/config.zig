@@ -24,6 +24,7 @@ pub const Config = struct {
     recursive: bool = false,
     notify: bool = false,
     backend_start: bool = true,
+    hotplug: bool = true,
     timeout: u64 = 15,
     resize: []const u8 = "crop",
 
@@ -185,6 +186,8 @@ fn set(rt: Runtime, a: u.A, cfg: *Config, key: []const u8, raw: []const u8) !voi
         cfg.notify = try boolean(value);
     } else if (u.eql(key, "backend_start")) {
         cfg.backend_start = try boolean(value);
+    } else if (u.eql(key, "hotplug")) {
+        cfg.hotplug = try boolean(value);
     } else if (u.eql(key, "timeout")) {
         cfg.timeout = try u.duration(value, 1);
         if (cfg.timeout == 0 or cfg.timeout > 300) return error.InvalidTimeout;

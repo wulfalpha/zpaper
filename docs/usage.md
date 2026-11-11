@@ -47,6 +47,7 @@ zpaper status --json
 zpaper history
 zpaper search forest
 zpaper select 3
+zpaper refresh                 # reapply the saved layout (alias: restore)
 zpaper reload
 zpaper stop
 ```

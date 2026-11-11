@@ -28,8 +28,23 @@ stderr. `notify` is optional and a missing notification tool does not fail chang
 
 Disconnected outputs and saved non-image backgrounds are reported as skipped
 when restoring a layout; other connected outputs still apply. This release saves
-image paths, not solid-color backgrounds or renderer effects. Automatic hotplug
-restoration, per-monitor collection assignments, and change hooks are future work.
+image paths, not solid-color backgrounds or renderer effects. Per-monitor collection
+assignments and change hooks are future work.
+
+## Hotplug restore
+
+With awww or swww, the daemon checks the connected outputs every two seconds
+(`hotplug = true`, the default). An output that was reconnected, or that shows
+no image because the renderer restarted, gets back the last image zpaper recorded
+for it, including one from an older layout if it was unplugged during rotation.
+A monitor zpaper has never seen gets a fresh image from the active collection,
+even during a hold, and that becomes a new layout. Restoring a known image does
+not add history, use up shuffle progress, release holds, or reset the rotation
+timer. Outputs already showing an image are never changed, so wallpapers set
+outside zpaper stay put. If the renderer stops answering, the daemon restarts it
+when `backend_start = true` and retries every 15 seconds. Set `hotplug = false`
+to turn this off. `zpaper refresh` (an alias for `restore`) reapplies the saved
+layout by hand, with or without a daemon.
 
 ## Migration and state
 

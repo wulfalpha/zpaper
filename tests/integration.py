@@ -340,6 +340,66 @@ class Integration(unittest.TestCase):
         self.assertEqual(self.shown(), {'DP-1': self.pics[0]})
         self.assertEqual(self.state()['current'], [{'output': 'DP-1', 'image': self.pics[0]}])
 
+    def wait_for(self, predicate, timeout=8):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return True
+            time.sleep(.1)
+        return predicate()
+
+    def test_refresh_alias_reapplies_saved_layout(self):
+        self.cmd('set', self.pics[2], self.pics[3])
+        self.display.write_text(json.dumps({'DP-1': '', 'HDMI-A-1': ''}))
+        self.cmd('refresh')
+        self.assertEqual(self.shown(), {'DP-1': self.pics[2], 'HDMI-A-1': self.pics[3]})
+
+    def test_hotplug_restores_returning_output_without_new_history(self):
+        self.cmd('set', self.pics[2], self.pics[3])
+        self.start()
+        layouts = len(self.state()['layouts'])
+        images = self.state()['images']
+        self.display.write_text(json.dumps({'DP-1': self.pics[2]}))
+        time.sleep(2.5)
+        self.display.write_text(json.dumps({'DP-1': self.pics[2], 'HDMI-A-1': ''}))
+        self.assertTrue(self.wait_for(lambda: self.shown().get('HDMI-A-1') == self.pics[3]), self.shown())
+        self.assertEqual(len(self.state()['layouts']), layouts)
+        self.assertEqual(self.state()['images'], images)
+
+    def test_hotplug_restores_renderer_reset(self):
+        self.cmd('set', self.pics[2], self.pics[3])
+        self.start()
+        self.display.write_text(json.dumps({'DP-1': '', 'HDMI-A-1': ''}))
+        self.assertTrue(self.wait_for(lambda: self.shown() == {'DP-1': self.pics[2], 'HDMI-A-1': self.pics[3]}), self.shown())
+
+    def test_hotplug_new_output_gets_fresh_image(self):
+        self.cmd('set', self.pics[2])
+        self.cmd('hold')
+        self.start()
+        time.sleep(2.5)
+        shown = self.shown()
+        shown['DP-2'] = ''
+        self.display.write_text(json.dumps(shown))
+        self.assertTrue(self.wait_for(lambda: self.shown().get('DP-2') in self.pics), self.shown())
+        current = {entry['output']: entry['image'] for entry in self.state()['current']}
+        self.assertEqual(current['DP-2'], self.shown()['DP-2'])
+        self.assertEqual(self.shown()['DP-1'], self.pics[2])
+
+    def test_hotplug_leaves_external_changes(self):
+        self.cmd('set', self.pics[2])
+        self.start()
+        self.display.write_text(json.dumps({'DP-1': self.pics[3], 'HDMI-A-1': self.pics[2]}))
+        time.sleep(3)
+        self.assertEqual(self.shown()['DP-1'], self.pics[3])
+
+    def test_hotplug_can_be_disabled(self):
+        self.config('hotplug = false\n')
+        self.cmd('set', self.pics[2])
+        self.start()
+        self.display.write_text(json.dumps({'DP-1': '', 'HDMI-A-1': ''}))
+        time.sleep(3)
+        self.assertEqual(self.shown(), {'DP-1': '', 'HDMI-A-1': ''})
+
     def test_corrupt_state_is_not_overwritten(self):
         self.cmd('hold')
         path = self.root / 'state' / 'zpaper' / 'state.json'

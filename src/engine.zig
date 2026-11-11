@@ -244,6 +244,82 @@ pub const Engine = struct {
             return err;
         };
     }
+    // Most recent existing image recorded for an output: the current layout
+    // first, then the layout timeline from newest to oldest. This lets a
+    // monitor that was unplugged during rotation get its own image back.
+    fn lastImage(self: *Engine, output: []const u8) ?[]const u8 {
+        for (self.state.current) |entry| if (u.eql(entry.output, output) and entry.image.len > 0 and u.exists(self.rt, entry.image)) return entry.image;
+        var i = self.state.layouts.len;
+        while (i > 0) {
+            i -= 1;
+            for (self.state.layouts[i].outputs) |entry| if (u.eql(entry.output, output) and entry.image.len > 0 and u.exists(self.rt, entry.image)) return entry.image;
+        }
+        return null;
+    }
+    // Hotplug and renderer-restart recovery for queryable backends. Outputs
+    // that appeared since `previous` (null on the first check) or that show no
+    // image get their last recorded image back, or a fresh pick if they never
+    // had one. Outputs showing an image are left alone, so changes made
+    // outside zpaper are not reverted. Restoring is not a new choice: it does
+    // not touch history, shuffle progress, holds, or the rotation timer.
+    // Returns the connected output names for the next comparison.
+    pub fn reconcile(self: *Engine, previous: ?[]const []const u8) ![]const []const u8 {
+        const b = self.be();
+        if (!b.queryable()) return error.QueryUnsupported;
+        const actual = b.query() catch blk: {
+            // The renderer may have crashed; ready() restarts it if allowed.
+            try b.ready();
+            break :blk try b.query();
+        };
+        var names: std.ArrayList([]const u8) = .empty;
+        var recorded = try self.a.dupe(Assignment, self.state.current);
+        var new_layout = false;
+        var changed = false;
+        for (actual) |entry| {
+            try names.append(self.a, entry.output);
+            const appeared = if (previous) |p| !u.contains(p, entry.output) else false;
+            if (!appeared and entry.image.len > 0) continue;
+            const known = self.lastImage(entry.output);
+            const image = known orelse self.pickFresh() catch |err| {
+                try self.print("new output {s}: {s}\n", .{ entry.output, if (u.diagnostic.len > 0) u.diagnostic else @errorName(err) });
+                u.diagnostic = "";
+                continue;
+            };
+            if (u.eql(entry.image, image)) continue;
+            b.apply(image, entry.output) catch |err| {
+                try self.print("restore {s} failed: {s}\n", .{ entry.output, if (u.diagnostic.len > 0) u.diagnostic else @errorName(err) });
+                u.diagnostic = "";
+                continue;
+            };
+            if (known == null) {
+                // A fresh pick for a never-seen output is a real new image.
+                new_layout = true;
+                try self.state.addImage(self.a, image, try std.fmt.allocPrint(self.a, "{d}", .{self.now()}));
+                try self.state.markSeen(self.a, self.collectionName(), image);
+                try self.print("new output {s}: {s}\n", .{ entry.output, image });
+            } else try self.print("restored {s}: {s}\n", .{ entry.output, image });
+            var found = false;
+            for (recorded) |*saved| if (u.eql(saved.output, entry.output)) {
+                saved.image = image;
+                found = true;
+            };
+            if (!found) recorded = try self.a.dupe(Assignment, try u.append(Assignment, self.a, recorded, .{ .output = entry.output, .image = image }));
+            changed = true;
+        }
+        if (new_layout) {
+            try self.state.record(self.rt, self.a, recorded);
+        } else if (changed) {
+            self.state.current = recorded;
+        }
+        if (changed) self.dirty = true;
+        return names.toOwnedSlice(self.a);
+    }
+    fn pickFresh(self: *Engine) ![]const u8 {
+        const cfg = try self.settings();
+        if (cfg.wallpaper) |path| return path;
+        const dir = cfg.dir orelse return error.NoDirectoryConfigured;
+        return self.state.choose(self.rt, self.a, self.collectionName(), try picker.collect(self.rt, self.a, dir, cfg.recursive));
+    }
     fn navigate(self: *Engine, index: usize) !void {
         const desired = self.state.layouts[index].outputs;
         const before = try self.prepare();
