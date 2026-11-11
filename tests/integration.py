@@ -395,8 +395,11 @@ class Integration(unittest.TestCase):
         shown['DP-2'] = ''
         self.display.write_text(json.dumps(shown))
         self.assertTrue(self.wait_for(lambda: self.shown().get('DP-2') in self.pics), self.shown())
-        current = {entry['output']: entry['image'] for entry in self.state()['current']}
-        self.assertEqual(current['DP-2'], self.shown()['DP-2'])
+        # The display changes before the daemon saves state; wait for both.
+        def recorded():
+            current = {entry['output']: entry['image'] for entry in self.state()['current']}
+            return current.get('DP-2') == self.shown()['DP-2']
+        self.assertTrue(self.wait_for(recorded), self.state()['current'])
         self.assertEqual(self.shown()['DP-1'], self.pics[2])
 
     def test_hotplug_leaves_external_changes(self):
