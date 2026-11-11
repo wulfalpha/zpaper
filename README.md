@@ -33,6 +33,25 @@ which monitor, and keeps track of everything you've picked.
   `feh` on X11 (plus `xrandr` for hotplug restore), or any command through the `custom` backend
 - Optional: Python 3 and `fzf` for the [`zpaper-pick`](contrib/zpaper-pick) picker
 
+## Install
+
+Prebuilt Linux binaries for **x86_64** and **arm64** (including Raspberry Pi) are on
+the [releases page](https://github.com/wulfalpha/zpaper/releases). They need glibc
+2.31 or newer.
+
+```sh
+arch=$(uname -m)   # x86_64 or aarch64
+version=0.8.0
+curl -LO "https://github.com/wulfalpha/zpaper/releases/download/v$version/zpaper-$version-$arch-linux.tar.gz"
+tar xzf "zpaper-$version-$arch-linux.tar.gz"
+install -Dm755 "zpaper-$version-$arch-linux/zpaper" ~/.local/bin/zpaper
+```
+
+Each archive also contains the example config, the systemd unit and
+`zpaper-pick`. `SHA256SUMS` on the release lists checksums.
+
+To build from source instead, see the quick start below.
+
 ## Quick start
 
 ```sh

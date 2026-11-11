@@ -8,6 +8,9 @@
   collection's interval. Unassigned monitors follow the active collection;
   `use` and the schedule only change those.
 - `status` and `collections` show output assignments and per-collection timers.
+- Prebuilt release binaries for x86_64 and arm64 (glibc 2.31+), built and
+  tested on native runners when a version tag is pushed.
+- CI also runs on arm64.
 
 ### Changed
 - State format version 4 (adds per-collection rotation timers). Older states are
