@@ -1,37 +1,159 @@
 #!/usr/bin/env python3
-"""Optional fzf history picker. Usage: zpaper-pick [substring] [output]."""
+"""Interactive wallpaper picker for zpaper, using fzf with image previews.
+
+Usage: zpaper-pick [options] [substring] [output]
+
+With several monitors connected, first choose a monitor (or all of them), then
+choose an image. Images come from zpaper's history, or with --browse from the
+chosen monitor's collection. The substring narrows the image list; an output
+(positional or --output) skips the monitor step.
+
+Options:
+  -o, --output NAME      apply to this output; skips the monitor step
+  -a, --all              apply to every output; skips the monitor step
+  -b, --browse           browse the chosen monitor's collection instead of history
+  -C, --collection NAME  browse this collection instead of history
+      --config PATH      zpaper configuration to use
+      --no-preview       do not show image previews
+
+Previews use chafa when installed, otherwise kitty's icat inside kitty, and
+fall back to file details. Set ZPAPER_PICK_PREVIEW to a command to override; the
+image path is appended to it. Requires zpaper and fzf in PATH.
+"""
+import argparse
 import json
+import os
+import shutil
 import subprocess
 import sys
 
+ALL = '*'
 
-def main():
-    if len(sys.argv) > 3:
-        raise SystemExit('Usage: zpaper-pick [substring] [output]')
-    pattern = sys.argv[1] if len(sys.argv) > 1 else ''
-    entries = json.loads(subprocess.check_output(['zpaper', 'history', '--json']))
-    entries = [entry for entry in entries if pattern in entry['path']]
-    if not entries:
-        raise SystemExit('No matching wallpaper history.')
-    # Carry only a local index through the UI. Apply the selected path directly
-    # so intervening daemon activity cannot change what a history index means.
-    labels = [f"{i}\t{entry['path']}" for i, entry in enumerate(entries)]
-    selected = subprocess.run(
-        ['fzf', '--read0', '--print0', '--delimiter=\t', '--with-nth=2..',
-         '--prompt=Wallpaper> '],
-        input=('\0'.join(labels) + '\0').encode(), stdout=subprocess.PIPE)
+
+def parse_args():
+    parser = argparse.ArgumentParser(prog='zpaper-pick', add_help=True,
+                                     description='Interactive wallpaper picker for zpaper.')
+    parser.add_argument('substring', nargs='?', default='', help='only list image paths containing this text')
+    parser.add_argument('output', nargs='?', help='output to apply to (skips the monitor step)')
+    target = parser.add_mutually_exclusive_group()
+    target.add_argument('-o', '--output', dest='output_option', metavar='NAME', help='output to apply to')
+    target.add_argument('-a', '--all', action='store_true', help='apply to every output')
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument('-b', '--browse', action='store_true', help="browse the monitor's collection")
+    source.add_argument('-C', '--collection', metavar='NAME', help='browse this collection')
+    parser.add_argument('--config', metavar='PATH', help='zpaper configuration to use')
+    parser.add_argument('--no-preview', action='store_true', help='do not show image previews')
+    args = parser.parse_args()
+    if args.output and args.output_option:
+        parser.error('give the output once, either positionally or with --output')
+    if args.output and args.all:
+        parser.error('--all cannot be combined with an output')
+    args.output = args.output or args.output_option
+    return args
+
+
+class Zpaper:
+    def __init__(self, config):
+        self.base = ['zpaper'] + (['--config', config] if config else [])
+
+    def json(self, *args):
+        result = subprocess.run(self.base + [*args, '--json'], stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True)
+        if result.returncode:
+            raise SystemExit(f'zpaper {" ".join(args)}: {result.stderr.strip()}')
+        return json.loads(result.stdout)
+
+    def apply(self, path, output):
+        command = self.base + ['set']
+        if output:
+            command += ['--output', output]
+        return subprocess.run(command + ['--', path]).returncode
+
+
+def previewer():
+    """Shell command prefix that renders the image path appended to it."""
+    custom = os.environ.get('ZPAPER_PICK_PREVIEW')
+    if custom:
+        return custom
+    size = '"${FZF_PREVIEW_COLUMNS}x${FZF_PREVIEW_LINES}"'
+    if shutil.which('chafa'):
+        return f'chafa --animate=off --size={size}'
+    if shutil.which('kitty') and (os.environ.get('KITTY_WINDOW_ID') or os.environ.get('TERM') == 'xterm-kitty'):
+        return (f'kitty icat --clear --transfer-mode=memory --unicode-placeholder --stdin=no '
+                f'--place={size}@0x0')
+    return 'file -b --'
+
+
+def fzf(rows, prompt, header, preview):
+    """Show rows of (label, value, image) in fzf and return the chosen value.
+
+    Each line carries a local index, the visible label, and a hidden image
+    path for the preview. The chosen value is looked up by index, so paths
+    with unusual characters are returned exactly.
+    """
+    if not rows:
+        raise SystemExit('Nothing to choose from.')
+    lines = [f'{i}\t{label}\t{image}' for i, (label, _, image) in enumerate(rows)]
+    command = ['fzf', '--read0', '--print0', '--delimiter=\t', '--with-nth=2',
+               f'--prompt={prompt}', f'--header={header}']
+    if preview:
+        command += [f'--preview={preview} {{3..}}', '--preview-window=right,60%']
+    # Preview commands use POSIX sh syntax regardless of the user's shell.
+    env = {**os.environ, 'SHELL': '/bin/sh'}
+    selected = subprocess.run(command, input=('\0'.join(lines) + '\0').encode(),
+                              stdout=subprocess.PIPE, env=env)
     if selected.returncode:
         raise SystemExit(selected.returncode)
-    index = int(selected.stdout.split(b'\t', 1)[0])
-    command = ['zpaper', 'set']
-    if len(sys.argv) == 3:
-        command += ['--output', sys.argv[2]]
-    command += ['--', entries[index]['path']]
-    raise SystemExit(subprocess.run(command).returncode)
+    return rows[int(selected.stdout.split(b'\t', 1)[0])][1]
+
+
+def choose_output(zpaper, preview):
+    """Return an output name, or None for all outputs."""
+    connected = [entry for entry in zpaper.json('current')['outputs'] if entry['output'] != ALL]
+    if len(connected) < 2:
+        return None
+    width = max(len(entry['output']) for entry in connected)
+    rows = [(f"{entry['output']:<{width}}  {entry['image'] or '(no image)'}", entry['output'], entry['image'])
+            for entry in connected]
+    rows.append((f"{'all':<{width}}  every output", ALL, ''))
+    choice = fzf(rows, 'Monitor> ', 'Choose a monitor (preview: its current wallpaper)', preview)
+    return None if choice == ALL else choice
+
+
+def images_for(zpaper, args, output):
+    if args.collection or args.browse:
+        name = args.collection
+        if not name:
+            status = zpaper.json('status')
+            assigned = {rule['output']: rule['collection'] for rule in status.get('output_collections', [])}
+            name = assigned.get(output, status['collection'])
+        paths = zpaper.json('list', name)
+        source = f'collection {name}'
+    else:
+        paths = [entry['path'] for entry in zpaper.json('history')]
+        source = 'history'
+    paths = [path for path in paths if args.substring in path]
+    if not paths:
+        raise SystemExit(f'No matching images in {source}.')
+    return paths, source
+
+
+def main():
+    args = parse_args()
+    zpaper = Zpaper(args.config)
+    preview = None if args.no_preview else previewer()
+    if args.output or args.all:
+        output = args.output
+    else:
+        output = choose_output(zpaper, preview)
+    paths, source = images_for(zpaper, args, output)
+    rows = [(path, path, path) for path in paths]
+    path = fzf(rows, f'{output or "All outputs"}> ', f'Choose a wallpaper from {source}', preview)
+    raise SystemExit(zpaper.apply(path, output))
 
 
 if __name__ == '__main__':
     try:
         main()
-    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+    except FileNotFoundError as exc:
         raise SystemExit(f'zpaper-pick requires zpaper and fzf in PATH: {exc}')

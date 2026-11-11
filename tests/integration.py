@@ -5,10 +5,31 @@ import os
 from pathlib import Path
 import subprocess
 import socket
+import sys
 import tempfile
 import time
 import unittest
 
+PICK = Path(__file__).resolve().parent.parent / 'contrib' / 'zpaper-pick'
+FAKE_FZF = r'''#!/usr/bin/env python3
+# Records each call and picks the first row whose label contains the next
+# entry of FAKE_FZF_PICKS ("|"-separated, one per call); "cancel" exits 130.
+import json, os, pathlib, sys
+root = pathlib.Path(os.environ['FAKE_ROOT'])
+rows = [r for r in sys.stdin.buffer.read().split(b'\0') if r]
+calls = root / 'fzf-calls'
+n = len(calls.read_text().splitlines()) if calls.exists() else 0
+with calls.open('a') as f:
+    f.write(json.dumps({'args': sys.argv[1:], 'rows': [r.decode() for r in rows]}) + '\n')
+pick = os.environ.get('FAKE_FZF_PICKS', '').split('|')[n]
+if pick == 'cancel':
+    sys.exit(130)
+for row in rows:
+    if pick in row.decode().split('\t')[1]:
+        sys.stdout.buffer.write(row + b'\0')
+        sys.exit(0)
+sys.exit(1)
+'''
 BINARY = Path(os.environ.get("ZPAPER_BIN", "zig-out/bin/zpaper")).resolve()
 XRANDR = r'''#!/usr/bin/env python3
 import os, pathlib, sys
@@ -492,6 +513,72 @@ class Integration(unittest.TestCase):
         self.config('on_change = theme-hook %o\n', backend='feh')
         self.cmd('set', self.pics[2])
         self.assertTrue(self.wait_for(lambda: self.hook_calls() == [['*', self.pics[2]]]))
+
+    def pick(self, *args, picks, ok=True, preview='true'):
+        fzf = self.bin / 'fzf'
+        fzf.write_text(FAKE_FZF)
+        fzf.chmod(0o755)
+        link = self.bin / 'zpaper'
+        if not link.exists():
+            link.symlink_to(BINARY)
+        env = {**self.env, 'FAKE_FZF_PICKS': '|'.join(picks), 'ZPAPER_PICK_PREVIEW': preview}
+        p = subprocess.run([sys.executable, str(PICK), *args], env=env, text=True,
+                           capture_output=True, timeout=15)
+        if ok:
+            self.assertEqual(p.returncode, 0, p.stderr + p.stdout)
+        else:
+            self.assertNotEqual(p.returncode, 0, p.stderr + p.stdout)
+        return p
+
+    def fzf_calls(self):
+        return [json.loads(line) for line in (self.root / 'fzf-calls').read_text().splitlines()]
+
+    def test_pick_monitor_first_then_history_image(self):
+        self.cmd('set', self.pics[2])
+        self.cmd('set', self.pics[3])
+        self.pick(picks=['HDMI-A-1', 'c.png'])
+        self.assertEqual(self.shown(), {'DP-1': self.pics[3], 'HDMI-A-1': self.pics[2]})
+        monitor, image = self.fzf_calls()
+        labels = [row.split('\t')[1] for row in monitor['rows']]
+        self.assertTrue(labels[0].startswith('DP-1') and labels[1].startswith('HDMI-A-1'))
+        self.assertTrue(labels[-1].startswith('all'))
+        # Hidden third field previews the monitor's current wallpaper.
+        self.assertEqual(monitor['rows'][0].split('\t')[2], self.pics[3])
+        self.assertIn('--preview=true {3..}', monitor['args'])
+        self.assertEqual([row.split('\t')[1] for row in image['rows']], [self.pics[3], self.pics[2]])
+
+    def test_pick_all_outputs(self):
+        self.cmd('set', self.pics[2], self.pics[3])
+        self.cmd('set', self.pics[1])
+        self.pick(picks=['all', 'd.png'])
+        self.assertEqual(self.shown(), {'DP-1': self.pics[3], 'HDMI-A-1': self.pics[3]})
+
+    def test_pick_positional_output_skips_monitor_step_and_filters(self):
+        self.cmd('set', self.pics[2])
+        self.cmd('set', self.pics[3])
+        self.pick('c.png', 'HDMI-A-1', picks=['c.png'], preview='')
+        self.assertEqual(self.shown()['HDMI-A-1'], self.pics[2])
+        (call,) = self.fzf_calls()
+        self.assertEqual(len(call['rows']), 1)
+
+    def test_pick_browse_uses_monitor_collection(self):
+        self.assign_outputs(**{'HDMI-A-1': 'work'})
+        self.cmd('next')
+        self.pick('--browse', picks=['HDMI-A-1', '2.png'])
+        self.assertEqual(self.shown()['HDMI-A-1'], self.work_pics[2])
+        self.assertEqual(sorted(row.split('\t')[1] for row in self.fzf_calls()[1]['rows']), self.work_pics)
+
+    def test_pick_named_collection_and_no_preview(self):
+        self.make_collections()
+        self.pick('-C', 'quiet', '--all', '--no-preview', picks=['1.png'])
+        self.assertEqual(self.shown(), {'DP-1': self.quiet_pics[1], 'HDMI-A-1': self.quiet_pics[1]})
+        self.assertFalse(any(arg.startswith('--preview') for arg in self.fzf_calls()[0]['args']))
+
+    def test_pick_cancel_changes_nothing(self):
+        self.cmd('set', self.pics[2])
+        before = self.shown()
+        self.pick(picks=['cancel'], ok=False)
+        self.assertEqual(self.shown(), before)
 
     def test_corrupt_state_is_not_overwritten(self):
         self.cmd('hold')

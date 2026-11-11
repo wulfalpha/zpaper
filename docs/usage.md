@@ -87,6 +87,28 @@ not prevent an explicit manual selection or history restoration.
 
 `schedule`, `collections`, `history`, `layouts`, `favorites`, `list`, `current`,
 and `status` support `--json`.
-For interactive history search, the optional [zpaper-pick](../contrib/zpaper-pick)
-helper uses Python 3 and `fzf`: `zpaper-pick forest DP-1`. It passes the selected
-path directly, so changing history indexes cannot select the wrong image.
+## Interactive picker
+
+The optional [zpaper-pick](../contrib/zpaper-pick) helper (Python 3 and `fzf`) picks
+a wallpaper interactively with image previews:
+
+```sh
+zpaper-pick                    # choose a monitor, then an image from history
+zpaper-pick --browse           # ...or from that monitor's collection
+zpaper-pick -C quiet --all     # any collection, applied to every monitor
+zpaper-pick forest DP-1        # history paths containing "forest", on DP-1
+```
+
+- With several monitors connected, it first lists each one with a preview of its
+  current wallpaper, plus an "all" entry. An output given positionally, with
+  `--output`, or `--all` skips this step; so does a single monitor or a global
+  backend such as feh.
+- Images come from history by default. `--browse` lists the chosen monitor's
+  collection (its `[output.NAME]` assignment, otherwise the active collection);
+  `-C NAME` lists a named collection. A substring argument narrows the list.
+- Previews use `chafa` when installed (it picks sixel, kitty or text blocks for
+  your terminal), otherwise `kitty icat` inside kitty, otherwise file details.
+  Set `ZPAPER_PICK_PREVIEW` to another command (the image path is appended) or
+  pass `--no-preview`. `--config PATH` is passed through to zpaper.
+- The selected path is applied directly with `zpaper set`, so a rotation while
+  you are choosing cannot make it apply the wrong image.

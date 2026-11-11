@@ -31,7 +31,8 @@ which monitor, and keeps track of everything you've picked.
 - A renderer: [awww](https://codeberg.org/LGFae/awww) or
   [swww](https://github.com/LGFae/swww) on Wayland (full per-monitor support),
   `feh` on X11 (plus `xrandr` for hotplug restore), or any command through the `custom` backend
-- Optional: Python 3 and `fzf` for the [`zpaper-pick`](contrib/zpaper-pick) picker
+- Optional: Python 3 and `fzf` for the [`zpaper-pick`](contrib/zpaper-pick)
+  interactive picker, plus `chafa` for image previews
 
 ## Install
 
@@ -88,6 +89,7 @@ zpaper exclude                           # never rotate to this again
 zpaper history                           # recently shown images
 zpaper use landscapes                    # switch collection
 zpaper status --json
+zpaper-pick                              # pick a monitor, then an image (fzf)
 zpaper refresh                           # reapply the saved layout
 zpaper reload                            # re-read the config
 zpaper --help

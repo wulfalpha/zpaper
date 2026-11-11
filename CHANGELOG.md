@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- `zpaper-pick` is now monitor-first with image previews: with several monitors
+  it asks which one (or all) first, showing each monitor's current wallpaper,
+  then lists images with previews via `chafa` or `kitty icat`. New options:
+  `--browse` (the monitor's collection), `-C NAME`, `--all`, `--output`,
+  `--config`, `--no-preview`, and `ZPAPER_PICK_PREVIEW`. The old
+  `zpaper-pick [substring] [output]` usage still works.
+
 ## 0.8.0 — 2026-11-11
 
 ### Added
