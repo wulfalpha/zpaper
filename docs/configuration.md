@@ -28,8 +28,8 @@ stderr. `notify` is optional and a missing notification tool does not fail chang
 
 Disconnected outputs and saved non-image backgrounds are reported as skipped
 when restoring a layout; other connected outputs still apply. This release saves
-image paths, not solid-color backgrounds or renderer effects. Per-monitor collection
-assignments are future work.
+image paths, not solid-color backgrounds or renderer effects. To give a monitor its
+own collection, see [Per-monitor collections](collections.md#per-monitor-collections).
 
 ## Change hook
 
@@ -91,10 +91,11 @@ repeat. Relative legacy paths are skipped because their original working directo
 is unknown. The shell script's `wallpaper_state` is a **previous** layout, so it is
 not imported as the current desktop. Old Zig flat state is also left untouched.
 
-Version 1 and 2 state files are read automatically and upgraded to version 3 on
+Version 1, 2 and 3 state files are read automatically and upgraded to version 4 on
 the next successful state write, preserving history, holds, collection selection,
-and shuffle progress. Version 3 adds the scheduled-period cursor and manual
-override. Older zpaper binaries cannot read version 3 state.
+and shuffle progress. Version 3 added the scheduled-period cursor and manual
+override; version 4 adds rotation timers for collections assigned to outputs.
+Older zpaper binaries cannot read newer state versions.
 
 State lives at `$XDG_STATE_HOME/zpaper/state.json`, defaulting to
 `~/.local/state/zpaper/state.json`. It is versioned JSON, saved through an atomic

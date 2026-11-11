@@ -61,6 +61,13 @@ notify = false
 # interval = 20m
 # recursive = false
 
+# Optional per-monitor collections (awww/swww only). An assigned monitor always
+# uses its collection and rotates on that collection's interval; other monitors
+# follow the active collection. Find output names with `zpaper current`.
+#
+# [output.DP-2]
+# collection = quiet
+
 # Optional daily schedule, using the local timezone. Define the named collections
 # above before enabling this example. The most recent entry remains active until
 # the next one; a manual choice lasts until the next scheduled period.

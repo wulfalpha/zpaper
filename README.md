@@ -20,7 +20,7 @@ which monitor, and keeps track of everything you've picked.
   set time (`zpaper hold 2h`)
 - **Favorites and exclusions** without touching your files
 - **Named collections** (separate image folders, each with its own interval and
-  shuffle progress)
+  shuffle progress), assignable per monitor
 - **Daily schedule**: switch collections at set times of day
 - Single binary, no shell evaluation, scriptable JSON output
 

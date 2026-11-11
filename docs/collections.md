@@ -49,9 +49,8 @@ selection and progress unchanged. After a partial backend failure, the new
 collection is active and only successful output changes are recorded; the command
 reports the failure.
 
-Selection applies to the whole daemon. Per-output image commands and holds still
-work, but assigning separate collections to different outputs is not supported in
-this pass. Favorites, exclusions, image history, and the layout timeline remain
+The active collection applies to every monitor without its own assignment (see
+[Per-monitor collections](#per-monitor-collections) below). Favorites, exclusions, image history, and the layout timeline remain
 global. Browsing `previous`/`next` restores old layouts without changing the active
 collection; new rotation uses the active collection. `use` branches from the
 current timeline position.
@@ -63,3 +62,36 @@ collection: switch to another collection first. If it was removed while the daem
 was stopped, `status` reports the missing name and `use default` or `use NAME`
 recovers it. Changing a collection's directory reconciles its shuffle progress
 against the new files at the next rotation.
+
+## Per-monitor collections
+
+With awww or swww, an `[output.NAME]` section gives a monitor its own collection.
+Find the output names with `zpaper current`.
+
+```ini
+[collection.portrait]
+dir = ~/Pictures/wallpapers/portrait
+interval = 1h
+
+[output.DP-2]
+collection = portrait
+```
+
+- An assigned monitor always draws from its collection. Monitors without a
+  section follow the active collection, as before.
+- **Each collection rotates on its own interval.** Here DP-2 changes hourly while
+  the other monitors keep the active collection's interval. Each collection picks
+  one image per rotation, shared by every monitor that draws from it.
+- `use` and the schedule change the active collection, so they only change
+  unassigned monitors. If every connected monitor is assigned, they switch the
+  active collection without changing any wallpaper.
+- `next` changes every monitor, each from its own collection. `next --output DP-2`
+  picks from DP-2's collection. `set`, `previous`, holds, and hotplug restore work
+  as usual; a newly connected monitor with a section gets an image from its
+  collection.
+- `collections` lists each collection's assigned outputs, and `status` shows them
+  next to each output along with each assigned collection's next rotation.
+- The only key is `collection`, which must name a defined collection (or
+  `default`). Output sections need a per-monitor backend; with `backend = feh` or
+  `custom` they are a configuration error, and they are ignored if `auto` resolves
+  to feh.

@@ -219,6 +219,7 @@ fn daemonLoop(rt: Runtime, a: u.A, paths: ipc.Paths, cfg_path: []const u8, requi
     defer outputs_arena.deinit();
     var known_outputs: ?[]const []const u8 = null;
     var hotplug_at: i64 = 0;
+    var assigned_retry_at: i64 = 0;
     while (!stopping.load(.acquire)) {
         var poll = [_]platform.pollfd{.{ .fd = fd, .events = platform.POLL.IN, .revents = 0 }};
         _ = try platform.poll(&poll, 500);
@@ -330,8 +331,15 @@ fn daemonLoop(rt: Runtime, a: u.A, paths: ipc.Paths, cfg_path: []const u8, requi
             }
         }
         const active = cfg.effective(cfg.selectedName(e.state.collection)) catch continue;
+        if (now >= assigned_retry_at) {
+            const stalled = e.rotateDue() catch |err| blk: {
+                std.log.err("rotation: {s}", .{if (u.diagnostic.len > 0) u.diagnostic else @errorName(err)});
+                break :blk true;
+            };
+            if (stalled) assigned_retry_at = now + 5;
+        }
         if (forced or (!scheduled and active.interval > 0 and now >= e.state.next_due and now >= retry_at)) {
-            e.rotate(!forced, null) catch |err| {
+            (if (forced) e.rotate(false, null) else e.rotateActive(true)) catch |err| {
                 std.log.err("rotation: {s}", .{if (u.diagnostic.len > 0) u.diagnostic else @errorName(err)});
             };
             if (forced) try e.rememberManualChoice(.next);

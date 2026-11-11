@@ -50,9 +50,12 @@ pub const Engine = struct {
         if (!scheduling.due(window, self.state.schedule_cursor)) return false;
         if (self.state.held("*", self.now())) return true;
         const before = self.state;
-        if (!u.eql(self.collectionName(), window.current.collection) or self.state.current.len == 0) {
+        if (!(try self.hasUnassignedOutput())) {
+            // Every monitor has its own collection: switch without a change.
             self.state.collection = window.current.collection;
-            self.rotate(true, null) catch |err| {
+        } else if (!u.eql(self.collectionName(), window.current.collection) or self.state.current.len == 0) {
+            self.state.collection = window.current.collection;
+            self.rotateActive(true) catch |err| {
                 if (!self.dirty) {
                     self.state = before;
                 } else {
@@ -106,6 +109,19 @@ pub const Engine = struct {
     fn collectionName(self: *Engine) []const u8 {
         return self.cfg.selectedName(self.state.collection);
     }
+    // Per-monitor assignments only apply where outputs can be targeted.
+    fn assignments(self: *Engine) bool {
+        return self.cfg.outputs.len > 0 and self.be().queryable();
+    }
+    fn assigned(self: *Engine, output: []const u8) bool {
+        return self.assignments() and self.cfg.assignedCollection(output) != null;
+    }
+    // The collection an output draws from: its [output.NAME] assignment, or
+    // the active collection that `use` and the schedule control.
+    fn collectionFor(self: *Engine, output: []const u8) []const u8 {
+        if (self.assignments()) if (self.cfg.assignedCollection(output)) |name| return name;
+        return self.collectionName();
+    }
     fn settings(self: *Engine) !config.Config {
         return self.cfg.effective(self.collectionName()) catch return u.fail(self.a, "collection '{s}' is not defined; select one with 'zpaper use NAME'", .{self.collectionName()});
     }
@@ -123,6 +139,22 @@ pub const Engine = struct {
         const cfg = try self.settings();
         self.state.next_due = if (cfg.interval == 0) 0 else self.now() + @as(i64, @intCast(cfg.interval));
         self.dirty = true;
+    }
+    fn resetCollectionTimer(self: *Engine, name: []const u8) !void {
+        const cfg = self.cfg.effective(name) catch return;
+        try self.state.setDue(self.a, name, if (cfg.interval == 0) 0 else self.now() + @as(i64, @intCast(cfg.interval)));
+        self.dirty = true;
+    }
+    // A change restarts the timer of each collection whose outputs changed:
+    // the active collection's for unassigned outputs, and each assigned one.
+    fn resetTimers(self: *Engine, changed: []const []const u8) !void {
+        var active = !self.assignments();
+        for (changed) |output| {
+            if (self.assigned(output)) {
+                try self.resetCollectionTimer(self.collectionFor(output));
+            } else active = true;
+        }
+        if (active) try self.resetTimer();
     }
     fn outputSelected(output: []const u8, filter: ?[]const u8) bool {
         const value = filter orelse return true;
@@ -165,6 +197,7 @@ pub const Engine = struct {
         var after = try self.a.dupe(Assignment, before);
         var successes: usize = 0;
         var failures: usize = 0;
+        var changed: std.ArrayList([]const u8) = .empty;
         const b = self.be();
         for (desired) |entry| {
             var index: ?usize = null;
@@ -184,6 +217,7 @@ pub const Engine = struct {
                 continue;
             };
             successes += 1;
+            try changed.append(self.a, entry.output);
             if (index) |i| {
                 after[i] = entry;
             } else {
@@ -192,7 +226,7 @@ pub const Engine = struct {
             try self.print("{s}: {s}\n", .{ entry.output, entry.image });
             const timestamp = try std.fmt.allocPrint(self.a, "{d}", .{self.now()});
             try self.state.addImage(self.a, entry.image, timestamp);
-            try self.state.markSeen(self.a, self.collectionName(), entry.image);
+            try self.state.markSeen(self.a, self.collectionFor(entry.output), entry.image);
         }
         if (successes > 0) {
             self.wallpaper_applied = true;
@@ -204,7 +238,7 @@ pub const Engine = struct {
                 if (before.len > 0) try self.state.record(self.rt, self.a, before);
                 try self.state.record(self.rt, self.a, after);
             }
-            try self.resetTimer();
+            try self.resetTimers(changed.items);
             for (desired) |entry| if (outputChanged(after, entry)) {
                 self.runHook(entry.output, entry.image);
                 break;
@@ -265,6 +299,7 @@ pub const Engine = struct {
     }
     pub fn rotate(self: *Engine, automatic: bool, filter: ?[]const u8) !void {
         if (automatic and self.state.held("*", self.now())) return;
+        if (self.assignments()) return self.rotateAssigned(automatic, filter, false);
         const cfg = try self.settings();
         if (cfg.wallpaper) |path| return self.setImages(&.{path}, filter, automatic);
         const dir = cfg.dir orelse return error.NoDirectoryConfigured;
@@ -315,7 +350,7 @@ pub const Engine = struct {
             const appeared = if (previous) |p| !u.contains(p, entry.output) else false;
             if (!appeared and entry.image.len > 0) continue;
             const known = self.lastImage(entry.output);
-            const image = known orelse self.pickFresh() catch |err| {
+            const image = known orelse self.pickFrom(self.collectionFor(entry.output)) catch |err| {
                 try self.print("new output {s}: {s}\n", .{ entry.output, if (u.diagnostic.len > 0) u.diagnostic else @errorName(err) });
                 u.diagnostic = "";
                 continue;
@@ -331,7 +366,7 @@ pub const Engine = struct {
                 new_layout = true;
                 if (fresh_image.len == 0) fresh_image = image;
                 try self.state.addImage(self.a, image, try std.fmt.allocPrint(self.a, "{d}", .{self.now()}));
-                try self.state.markSeen(self.a, self.collectionName(), image);
+                try self.state.markSeen(self.a, self.collectionFor(entry.output), image);
                 try self.print("new output {s}: {s}\n", .{ entry.output, image });
             } else try self.print("restored {s}: {s}\n", .{ entry.output, image });
             var found = false;
@@ -380,11 +415,103 @@ pub const Engine = struct {
         try self.print("monitor layout changed; restored {s}\n", .{image});
         return monitors;
     }
-    fn pickFresh(self: *Engine) ![]const u8 {
-        const cfg = try self.settings();
+    fn pickFrom(self: *Engine, name: []const u8) ![]const u8 {
+        const cfg = self.cfg.effective(name) catch return u.fail(self.a, "collection '{s}' is not defined; select one with 'zpaper use NAME'", .{name});
         if (cfg.wallpaper) |path| return path;
         const dir = cfg.dir orelse return error.NoDirectoryConfigured;
-        return self.state.choose(self.rt, self.a, self.collectionName(), try picker.collect(self.rt, self.a, dir, cfg.recursive));
+        return self.state.choose(self.rt, self.a, name, try picker.collect(self.rt, self.a, dir, cfg.recursive));
+    }
+    // Rotate only the outputs that follow the active collection; used by `use`
+    // and the schedule so assigned monitors keep their own collections.
+    pub fn rotateActive(self: *Engine, automatic: bool) !void {
+        if (automatic and self.state.held("*", self.now())) return;
+        if (self.assignments()) return self.rotateAssigned(automatic, null, true);
+        return self.rotate(automatic, null);
+    }
+    // Interval rotation for collections assigned to outputs. Each collection
+    // has its own deadline and rotates only its connected, unheld outputs.
+    // Returns true when a due collection could not change anything (held or
+    // failed), so the daemon can back off instead of re-checking every tick.
+    pub fn rotateDue(self: *Engine) !bool {
+        if (!self.assignments() or self.state.held("*", self.now())) return false;
+        var stalled = false;
+        var connected: ?[]const Assignment = null;
+        for (self.cfg.outputs, 0..) |rule, i| {
+            var duplicate = false;
+            for (self.cfg.outputs[0..i]) |earlier| if (u.eql(earlier.collection, rule.collection)) {
+                duplicate = true;
+            };
+            if (duplicate) continue;
+            const cfg = self.cfg.effective(rule.collection) catch continue;
+            if (cfg.interval == 0) continue;
+            const due = self.state.dueFor(rule.collection) orelse {
+                try self.resetCollectionTimer(rule.collection);
+                continue;
+            };
+            if (self.now() < due) continue;
+            if (connected == null) connected = try self.current();
+            var filter: std.ArrayList(u8) = .empty;
+            for (connected.?) |entry| if (self.cfg.assignedCollection(entry.output)) |name| if (u.eql(name, rule.collection)) {
+                if (filter.items.len > 0) try filter.append(self.a, ',');
+                try filter.appendSlice(self.a, entry.output);
+            };
+            if (filter.items.len == 0) {
+                try self.resetCollectionTimer(rule.collection);
+                continue;
+            }
+            const was_dirty = self.dirty;
+            self.dirty = false;
+            self.rotateAssigned(true, filter.items, false) catch |err| {
+                try self.print("rotation {s}: {s}\n", .{ rule.collection, if (u.diagnostic.len > 0) u.diagnostic else @errorName(err) });
+                u.diagnostic = "";
+            };
+            if (!self.dirty) stalled = true;
+            self.dirty = self.dirty or was_dirty;
+        }
+        return stalled;
+    }
+    // True when some connected output follows the active collection.
+    fn hasUnassignedOutput(self: *Engine) !bool {
+        if (!self.assignments()) return true;
+        for (try self.current()) |entry| if (!self.assigned(entry.output)) return true;
+        return false;
+    }
+    // Each collection picks one image per rotation, shared by the outputs that
+    // draw from it (matching the single-image behaviour without assignments).
+    fn rotateAssigned(self: *Engine, automatic: bool, filter: ?[]const u8, active_only: bool) !void {
+        const before_state = self.state;
+        errdefer if (!self.dirty) {
+            self.state = before_state;
+        };
+        _ = try self.settings();
+        const before = try self.prepare();
+        const outputs = try self.targets(before, filter, automatic);
+        const Pick = struct { collection: []const u8, image: []const u8 };
+        var picks: std.ArrayList(Pick) = .empty;
+        var desired: std.ArrayList(Assignment) = .empty;
+        if (active_only and automatic) {
+            var unassigned = false;
+            for (before) |entry| if (!self.assigned(entry.output)) {
+                unassigned = true;
+            };
+            // Nothing follows the active collection; wait a full interval
+            // instead of re-checking every tick.
+            if (!unassigned) return self.resetTimer();
+        }
+        for (outputs) |output| {
+            if (active_only and self.assigned(output)) continue;
+            const name = self.collectionFor(output);
+            const image = for (picks.items) |pick| {
+                if (u.eql(pick.collection, name)) break pick.image;
+            } else blk: {
+                const chosen = try self.pickFrom(name);
+                try picks.append(self.a, .{ .collection = name, .image = chosen });
+                break :blk chosen;
+            };
+            try desired.append(self.a, .{ .output = output, .image = image });
+        }
+        if (desired.items.len == 0) return;
+        try self.apply(before, desired.items, null);
     }
     fn navigate(self: *Engine, index: usize) !void {
         const desired = self.state.layouts[index].outputs;
@@ -420,7 +547,7 @@ pub const Engine = struct {
                 _ = self.cfg.effective(arg) catch return u.fail(self.a, "unknown collection '{s}'; run 'zpaper collections'", .{arg});
                 const before = self.state;
                 self.state.collection = arg;
-                self.rotate(false, null) catch |err| {
+                self.rotateActive(false) catch |err| {
                     if (!self.dirty) {
                         self.state = before;
                     } else {
@@ -430,22 +557,30 @@ pub const Engine = struct {
                 };
                 // Switching is a new choice even if two collections overlap.
                 if (self.state.layouts.len > 0) self.state.layouts = self.state.layouts[0 .. self.state.cursor + 1];
-                try self.print("active collection: {s}\n", .{arg});
+                if (!self.dirty) {
+                    // Every connected monitor has its own collection.
+                    self.dirty = true;
+                    try self.print("active collection: {s} (every connected output has its own collection)\n", .{arg});
+                } else try self.print("active collection: {s}\n", .{arg});
             },
             .collections => {
-                const Entry = struct { name: []const u8, active: bool, dir: ?[]const u8, wallpaper: ?[]const u8, interval_seconds: u64, recursive: bool };
+                const Entry = struct { name: []const u8, active: bool, dir: ?[]const u8, wallpaper: ?[]const u8, interval_seconds: u64, recursive: bool, outputs: []const []const u8 };
                 var entries: std.ArrayList(Entry) = .empty;
                 var names: std.ArrayList([]const u8) = .empty;
                 try names.append(self.a, "default");
                 for (self.cfg.collections) |collection| try names.append(self.a, collection.name);
                 for (names.items) |name| {
                     const cfg = try self.cfg.effective(name);
-                    try entries.append(self.a, .{ .name = name, .active = u.eql(name, self.collectionName()), .dir = cfg.dir, .wallpaper = cfg.wallpaper, .interval_seconds = cfg.interval, .recursive = cfg.recursive });
+                    var assigned_outputs: std.ArrayList([]const u8) = .empty;
+                    if (self.assignments()) for (self.cfg.outputs) |rule| if (u.eql(rule.collection, name)) {
+                        try assigned_outputs.append(self.a, rule.output);
+                    };
+                    try entries.append(self.a, .{ .name = name, .active = u.eql(name, self.collectionName()), .dir = cfg.dir, .wallpaper = cfg.wallpaper, .interval_seconds = cfg.interval, .recursive = cfg.recursive, .outputs = try assigned_outputs.toOwnedSlice(self.a) });
                 }
                 if (req.json) {
                     try self.print("{s}\n", .{try std.json.Stringify.valueAlloc(self.a, entries.items, .{})});
                 } else for (entries.items) |entry| {
-                    try self.print("{s}{s}: {s}; interval {d}s{s}\n", .{ if (entry.active) "* " else "  ", entry.name, entry.wallpaper orelse entry.dir orelse "(no source configured)", entry.interval_seconds, if (entry.recursive) "; recursive" else "" });
+                    try self.print("{s}{s}: {s}; interval {d}s{s}{s}\n", .{ if (entry.active) "* " else "  ", entry.name, entry.wallpaper orelse entry.dir orelse "(no source configured)", entry.interval_seconds, if (entry.recursive) "; recursive" else "", if (entry.outputs.len > 0) try std.fmt.allocPrint(self.a, "; outputs {s}", .{try std.mem.join(self.a, ",", entry.outputs)}) else "" });
                 }
             },
             .set => try self.setImages(req.args, req.output, false),
@@ -506,6 +641,8 @@ pub const Engine = struct {
                         .interval_seconds = interval,
                         .collection = self.collectionName(),
                         .collection_available = cfg != null,
+                        .output_collections = if (self.assignments()) self.cfg.outputs else &.{},
+                        .collection_due = if (self.assignments()) self.state.collection_due else &.{},
                         .schedule = try self.scheduleInfo(),
                     }, .{})});
                 } else {
@@ -513,7 +650,7 @@ pub const Engine = struct {
                     try self.print("collection: {s}{s}\n", .{ self.collectionName(), if (cfg == null) " (not defined; use another collection)" else "" });
                     const schedule_info = try self.scheduleInfo();
                     if (schedule_info.enabled) try self.print("schedule: {s}{s}\n", .{ schedule_info.current.?.collection, if (schedule_info.manual_override) " (manual choice until next change)" else if (schedule_info.pending) " (pending)" else "" });
-                    for (actual) |entry| try self.print("{s}: {s}\n", .{ entry.output, if (entry.image.len == 0) "(no image)" else entry.image });
+                    for (actual) |entry| try self.print("{s}: {s}{s}\n", .{ entry.output, if (entry.image.len == 0) "(no image)" else entry.image, if (self.assigned(entry.output)) try std.fmt.allocPrint(self.a, " [collection {s}]", .{self.collectionFor(entry.output)}) else "" });
                     for (self.state.holds) |h| if (h.until == -1 or h.until > self.now()) {
                         try self.print("hold {s}: {s}\n", .{ h.output, if (h.until == -1) "until resumed" else try std.fmt.allocPrint(self.a, "{d}s remaining", .{h.until - self.now()}) });
                     };
@@ -522,6 +659,15 @@ pub const Engine = struct {
                     } else {
                         try self.print("rotation: every {d}s; next due in {d}s (holds take precedence)\n", .{ interval, @max(0, self.state.next_due - self.now()) });
                     }
+                    if (self.assignments()) for (self.state.collection_due) |entry| {
+                        const assigned_cfg = self.cfg.effective(entry.name) catch continue;
+                        var in_use = false;
+                        for (self.cfg.outputs) |rule| if (u.eql(rule.collection, entry.name)) {
+                            in_use = true;
+                        };
+                        if (!in_use or assigned_cfg.interval == 0) continue;
+                        try self.print("rotation {s}: every {d}s; next due in {d}s\n", .{ entry.name, assigned_cfg.interval, @max(0, entry.due - self.now()) });
+                    };
                 }
             },
             .history, .search => {

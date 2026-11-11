@@ -8,9 +8,10 @@ pub const Assignment = struct { output: []const u8, image: []const u8 };
 pub const Layout = struct { time: i64, outputs: []const Assignment };
 pub const Image = struct { time: []const u8, path: []const u8 };
 pub const Hold = struct { output: []const u8 = "*", until: i64 = -1 };
+pub const Due = struct { name: []const u8, due: i64 };
 pub const Progress = struct { name: []const u8, seen: []const []const u8 = &.{} };
 pub const State = struct {
-    version: u32 = 3,
+    version: u32 = 4,
     schedule_cursor: ?scheduling.Cursor = null,
     collection: ?[]const u8 = null,
     collection_progress: []const Progress = &.{},
@@ -23,7 +24,23 @@ pub const State = struct {
     seen: []const []const u8 = &.{},
     holds: []const Hold = &.{},
     next_due: i64 = 0,
+    // Rotation deadlines for collections assigned to outputs ([output.NAME]);
+    // next_due stays the active collection's deadline.
+    collection_due: []const Due = &.{},
 
+    pub fn dueFor(self: State, name: []const u8) ?i64 {
+        for (self.collection_due) |entry| if (u.eql(entry.name, name)) return entry.due;
+        return null;
+    }
+    pub fn setDue(self: *State, a: u.A, name: []const u8, due: i64) !void {
+        const entries = try a.dupe(Due, self.collection_due);
+        for (entries) |*entry| if (u.eql(entry.name, name)) {
+            entry.due = due;
+            self.collection_due = entries;
+            return;
+        };
+        self.collection_due = try u.append(Due, a, entries, .{ .name = name, .due = due });
+    }
     pub fn seenFor(self: State, name: []const u8) []const []const u8 {
         if (u.eql(name, "default")) return self.seen;
         for (self.collection_progress) |progress| if (u.eql(progress.name, name)) return progress.seen;
@@ -127,8 +144,8 @@ pub fn load(rt: Runtime, a: u.A, path: []const u8) !State {
         return err;
     };
     var state = try std.json.parseFromSliceLeaky(State, a, bytes, .{ .allocate = .alloc_always });
-    if (state.version != 1 and state.version != 2 and state.version != 3) return error.UnsupportedStateVersion;
-    state.version = 3;
+    if (state.version < 1 or state.version > 4) return error.UnsupportedStateVersion;
+    state.version = 4;
     if ((state.layouts.len > 0 and state.cursor >= state.layouts.len) or (state.layouts.len == 0 and state.cursor != 0)) return error.InvalidStateCursor;
     return state;
 }

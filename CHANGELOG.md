@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.8.0 — 2026-11-11
+
+### Added
+- **Per-monitor collections** (awww/swww): `[output.NAME]` sections with
+  `collection = NAME` give a monitor its own collection, rotating on that
+  collection's interval. Unassigned monitors follow the active collection;
+  `use` and the schedule only change those.
+- `status` and `collections` show output assignments and per-collection timers.
+
+### Changed
+- State format version 4 (adds per-collection rotation timers). Older states are
+  upgraded automatically; older zpaper binaries cannot read version 4.
+
+### Fixed
+- A race in the subprocess-timeout integration test that made it fail at random.
+
 ## 0.7.0 — 2026-11-11
 
 ### Added

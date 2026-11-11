@@ -699,7 +699,7 @@ class Integration(unittest.TestCase):
         path.write_text(json.dumps(old))
         self.cmd('next')
         updated = self.state()
-        self.assertEqual(updated['version'], 3)
+        self.assertEqual(updated['version'], 4)
         self.assertEqual(updated['collection'], 'default')
         self.assertEqual(len(updated['seen']), 2)
         self.assertIn(old['seen'][0], updated['seen'])
@@ -729,6 +729,91 @@ class Integration(unittest.TestCase):
                 return status
             time.sleep(.1)
         self.fail(f'daemon did not switch to {name}')
+
+    def assign_outputs(self, extra='', interval='0', **assignments):
+        self.make_collections(interval=interval)
+        sections = ''.join(f'[output.{output}]\ncollection = {name}\n' for output, name in assignments.items())
+        self.config(extra=extra + self.collection_sections + sections, interval=interval)
+
+    def test_output_collection_rotation_draws_per_monitor(self):
+        self.assign_outputs(**{'HDMI-A-1': 'work'})
+        for _ in range(4):
+            self.cmd('next')
+            self.assertIn(self.shown()['DP-1'], self.pics)
+            self.assertIn(self.shown()['HDMI-A-1'], self.work_pics)
+        progress = {entry['name']: entry['seen'] for entry in self.state()['collection_progress']}
+        self.assertTrue(set(progress['work']) <= set(self.work_pics))
+        self.assertTrue(set(self.state()['seen']) <= set(self.pics))
+
+    def test_output_collection_next_for_one_output(self):
+        self.assign_outputs(**{'HDMI-A-1': 'work'})
+        self.cmd('set', self.pics[2])
+        self.cmd('next', '--output', 'HDMI-A-1')
+        self.assertEqual(self.shown()['DP-1'], self.pics[2])
+        self.assertIn(self.shown()['HDMI-A-1'], self.work_pics)
+
+    def test_use_only_changes_unassigned_outputs(self):
+        self.assign_outputs(**{'HDMI-A-1': 'work'})
+        self.cmd('next')
+        kept = self.shown()['HDMI-A-1']
+        self.cmd('use', 'quiet')
+        self.assertIn(self.shown()['DP-1'], self.quiet_pics)
+        self.assertEqual(self.shown()['HDMI-A-1'], kept)
+        status = json.loads(self.cmd('status', '--json').stdout)
+        self.assertEqual(status['collection'], 'quiet')
+        self.assertEqual(status['output_collections'], [{'output': 'HDMI-A-1', 'collection': 'work'}])
+        listing = self.cmd('collections').stdout
+        self.assertIn('outputs HDMI-A-1', listing)
+
+    def test_use_with_every_output_assigned_switches_without_change(self):
+        self.assign_outputs(**{'DP-1': 'work', 'HDMI-A-1': 'work'})
+        self.cmd('next')
+        before = self.shown()
+        result = self.cmd('use', 'quiet')
+        self.assertIn('own collection', result.stdout)
+        self.assertEqual(self.shown(), before)
+        self.assertEqual(json.loads(self.cmd('status', '--json').stdout)['collection'], 'quiet')
+
+    def test_schedule_with_every_output_assigned_does_not_stall_rotation(self):
+        self.assign_outputs(interval='1s', **{'DP-1': 'work', 'HDMI-A-1': 'work'})
+        self.cfg.write_text(self.cfg.read_text() + '[schedule]\n00:00 = quiet\n')
+        self.start()
+        self.wait_collection('quiet')
+        self.assertTrue(self.wait_for(lambda: self.shown()['DP-1'] in self.work_pics), self.shown())
+        selected = self.shown()['DP-1']
+        self.assertTrue(self.wait_for(lambda: self.shown()['DP-1'] != selected))
+        self.assertIn(self.shown()['DP-1'], self.work_pics)
+
+    def test_assigned_collection_rotates_on_its_own_interval(self):
+        self.make_collections(interval='1s')  # work rotates every second
+        self.config(extra=self.collection_sections + '[output.HDMI-A-1]\ncollection = work\n')  # global interval 0
+        self.cmd('next')
+        main = self.shown()['DP-1']
+        side = self.shown()['HDMI-A-1']
+        self.start()
+        self.assertTrue(self.wait_for(lambda: self.shown()['HDMI-A-1'] != side), self.shown())
+        self.assertIn(self.shown()['HDMI-A-1'], self.work_pics)
+        self.assertEqual(self.shown()['DP-1'], main)
+        self.assertIn('rotation work: every 1s', self.cmd('status').stdout)
+        self.cmd('hold', '--output', 'HDMI-A-1')
+        held = self.shown()['HDMI-A-1']
+        time.sleep(2.5)
+        self.assertEqual(self.shown()['HDMI-A-1'], held)
+
+    def test_hotplug_new_output_uses_its_collection(self):
+        self.assign_outputs(**{'DP-2': 'work'})
+        self.cmd('set', self.pics[2])
+        self.start()
+        time.sleep(2.5)
+        shown = self.shown()
+        shown['DP-2'] = ''
+        self.display.write_text(json.dumps(shown))
+        self.assertTrue(self.wait_for(lambda: self.shown().get('DP-2') in self.work_pics), self.shown())
+
+    def test_output_sections_rejected_for_global_backend(self):
+        self.make_collections()
+        self.config(extra=self.collection_sections + '[output.DP-1]\ncollection = work\n', backend='feh')
+        self.assertIn('per-monitor backend', self.cmd('check', ok=False).stderr)
 
     def test_schedule_startup_and_inspection(self):
         self.enable_schedule()
@@ -948,10 +1033,17 @@ time.sleep(30)
             self.assertLess(time.monotonic() - start, 4)
             pid = int(pidfile.read_text())
             proc = Path(f'/proc/{pid}/stat')
+
+            def gone():
+                # The process can be reaped between checks; treat that as gone.
+                try:
+                    return proc.read_text().split()[2] == 'Z'
+                except (FileNotFoundError, ProcessLookupError):
+                    return True
             deadline = time.monotonic() + 2
-            while proc.exists() and proc.read_text().split()[2] != 'Z' and time.monotonic() < deadline:
+            while not gone() and time.monotonic() < deadline:
                 time.sleep(.02)
-            self.assertTrue(not proc.exists() or proc.read_text().split()[2] == 'Z', 'descendant survived timeout')
+            self.assertTrue(gone(), 'descendant survived timeout')
         finally:
             if pidfile.exists():
                 try:
@@ -992,7 +1084,7 @@ time.sleep(30)
         path.write_text(json.dumps(old))
         self.cmd('hold')
         updated = self.state()
-        self.assertEqual(updated['version'], 3)
+        self.assertEqual(updated['version'], 4)
         self.assertEqual(updated['collection'], old['collection'])
         self.assertEqual(updated['collection_progress'], old['collection_progress'])
         self.assertEqual(updated['current'], old['current'])
