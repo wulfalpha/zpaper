@@ -13,7 +13,7 @@ which monitor, and keeps track of everything you've picked.
 - **History and undo**: step back and forth through up to 100 saved desktop
   layouts, or search and reapply old images
 - **Hotplug restore**: reconnected monitors and restarted renderers get their
-  wallpaper back automatically
+  wallpaper back automatically (awww/swww on Wayland, feh + xrandr on X11)
 - **Holds**: pause rotation everywhere or on one monitor, indefinitely or for a
   set time (`zpaper hold 2h`)
 - **Favorites and exclusions** without touching your files
@@ -28,7 +28,7 @@ which monitor, and keeps track of everything you've picked.
 - [Zig 0.16.0](https://ziglang.org/download/) to build
 - A renderer: [awww](https://codeberg.org/LGFae/awww) or
   [swww](https://github.com/LGFae/swww) on Wayland (full per-monitor support),
-  `feh` on X11, or any command through the `custom` backend
+  `feh` on X11 (plus `xrandr` for hotplug restore), or any command through the `custom` backend
 - Optional: Python 3 and `fzf` for the [`zpaper-pick`](contrib/zpaper-pick) picker
 
 ## Quick start

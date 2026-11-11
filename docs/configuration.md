@@ -43,7 +43,15 @@ not add history, use up shuffle progress, release holds, or reset the rotation
 timer. Outputs already showing an image are never changed, so wallpapers set
 outside zpaper stay put. If the renderer stops answering, the daemon restarts it
 when `backend_start = true` and retries every 15 seconds. Set `hotplug = false`
-to turn this off. `zpaper refresh` (an alias for `restore`) reapplies the saved
+to turn this off.
+
+With feh on X11, zpaper cannot ask what is displayed, so the daemon watches
+`xrandr --listmonitors` instead. When monitors are added, removed, resized or
+moved, it reruns feh with the recorded image so the background covers the new
+screen layout. This needs `xrandr` (usually in the `xorg-xrandr` package); without
+it the check is skipped. `hotplug = false` turns it off too.
+
+`zpaper refresh` (an alias for `restore`) reapplies the saved
 layout by hand, with or without a daemon.
 
 ## Migration and state

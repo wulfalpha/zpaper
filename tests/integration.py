@@ -10,6 +10,17 @@ import time
 import unittest
 
 BINARY = Path(os.environ.get("ZPAPER_BIN", "zig-out/bin/zpaper")).resolve()
+XRANDR = r'''#!/usr/bin/env python3
+import os, pathlib, sys
+monitors = pathlib.Path(os.environ['FAKE_ROOT']) / 'monitors'
+if not monitors.exists():
+    sys.exit(1)
+lines = monitors.read_text().split()
+print(f'Monitors: {len(lines)}')
+for i, line in enumerate(lines):
+    name, geometry = line.split('=')
+    print(f' {i}: +{name} {geometry}  {name}')
+'''
 FAKE = r'''#!/usr/bin/env python3
 import json, os, pathlib, sys, time
 root = pathlib.Path(os.environ['FAKE_ROOT'])
@@ -48,6 +59,9 @@ class Integration(unittest.TestCase):
             p = self.bin / name
             p.write_text(FAKE)
             p.chmod(0o755)
+        xrandr = self.bin / 'xrandr'
+        xrandr.write_text(XRANDR)
+        xrandr.chmod(0o755)
         self.runtime = self.root / 'runtime'
         self.runtime.mkdir(mode=0o700)
         self.images = self.root / 'images'
@@ -399,6 +413,34 @@ class Integration(unittest.TestCase):
         self.display.write_text(json.dumps({'DP-1': '', 'HDMI-A-1': ''}))
         time.sleep(3)
         self.assertEqual(self.shown(), {'DP-1': '', 'HDMI-A-1': ''})
+
+    def feh_calls(self):
+        calls = [json.loads(line) for line in (self.root / 'calls').read_text().splitlines()]
+        return [call for call in calls if call[0] == 'feh']
+
+    def test_feh_hotplug_reapplies_on_monitor_change(self):
+        self.config(backend='feh')
+        monitors = self.root / 'monitors'
+        monitors.write_text('eDP-1=1920/344x1080/194+0+0')
+        self.cmd('set', self.pics[2])
+        self.start()
+        time.sleep(2.5)
+        before = len(self.feh_calls())
+        monitors.write_text('eDP-1=1920/344x1080/194+0+0 HDMI-1=2560/597x1440/336+1920+0')
+        self.assertTrue(self.wait_for(lambda: len(self.feh_calls()) > before))
+        self.assertEqual(self.feh_calls()[-1], ['feh', '--bg-fill', self.pics[2]])
+        settled = len(self.feh_calls())
+        time.sleep(2.5)
+        self.assertEqual(len(self.feh_calls()), settled)
+
+    def test_feh_hotplug_without_xrandr_is_skipped(self):
+        self.config(backend='feh')
+        self.cmd('set', self.pics[2])
+        self.start()
+        started = len(self.feh_calls())
+        time.sleep(2.5)
+        self.assertEqual(self.cmd('status').returncode, 0)
+        self.assertEqual(len(self.feh_calls()), started)
 
     def test_corrupt_state_is_not_overwritten(self):
         self.cmd('hold')

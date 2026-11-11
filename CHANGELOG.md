@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.1 — 2026-11-11
+
+### Added
+- **Hotplug restore for feh on X11**: the daemon watches `xrandr --listmonitors`
+  and reruns feh with the recorded image when monitors are added, removed,
+  resized or moved. Skipped when `xrandr` is not installed; `hotplug = false`
+  turns it off.
+
 ## 0.6.0 — 2026-11-11
 
 ### Added

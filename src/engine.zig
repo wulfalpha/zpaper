@@ -265,6 +265,7 @@ pub const Engine = struct {
     // Returns the connected output names for the next comparison.
     pub fn reconcile(self: *Engine, previous: ?[]const []const u8) ![]const []const u8 {
         const b = self.be();
+        if (b.kind == .feh) return self.reconcileX11(previous);
         if (!b.queryable()) return error.QueryUnsupported;
         const actual = b.query() catch blk: {
             // The renderer may have crashed; ready() restarts it if allowed.
@@ -313,6 +314,32 @@ pub const Engine = struct {
         }
         if (changed) self.dirty = true;
         return names.toOwnedSlice(self.a);
+    }
+    // feh cannot report what it shows, so watch the X11 monitor layout instead.
+    // When monitors are added, removed, resized or moved, rerun feh with the
+    // recorded image so it covers the new screen. Without xrandr this check
+    // is unsupported and the daemon skips it.
+    fn reconcileX11(self: *Engine, previous: ?[]const []const u8) ![]const []const u8 {
+        const text = u.run(self.rt, self.a, &.{ "xrandr", "--listmonitors" }, self.cfg.timeout) catch {
+            u.diagnostic = "";
+            return error.QueryUnsupported;
+        };
+        const monitors = try parseMonitors(self.a, text);
+        const old = previous orelse return monitors;
+        var same_layout = old.len == monitors.len;
+        if (same_layout) for (monitors) |m| if (!u.contains(old, m)) {
+            same_layout = false;
+            break;
+        };
+        if (same_layout) return monitors;
+        const image = self.lastImage("*") orelse return monitors;
+        self.be().apply(image, "*") catch |err| {
+            try self.print("restore failed: {s}\n", .{if (u.diagnostic.len > 0) u.diagnostic else @errorName(err)});
+            u.diagnostic = "";
+            return monitors;
+        };
+        try self.print("monitor layout changed; restored {s}\n", .{image});
+        return monitors;
     }
     fn pickFresh(self: *Engine) ![]const u8 {
         const cfg = try self.settings();
@@ -590,3 +617,24 @@ pub const Engine = struct {
         try self.print("imported {d} history/favorite entries; original files unchanged\n", .{imported});
     }
 };
+// One entry per monitor from `xrandr --listmonitors`, without the index
+// column so renumbering alone is not a change: "+*eDP-1 1920/344x1080/194+0+0  eDP-1".
+pub fn parseMonitors(a: u.A, text: []const u8) ![]const []const u8 {
+    var monitors: std.ArrayList([]const u8) = .empty;
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0 or std.mem.startsWith(u8, line, "Monitors:")) continue;
+        const colon = std.mem.indexOf(u8, line, ": ") orelse continue;
+        try monitors.append(a, std.mem.trim(u8, line[colon + 2 ..], " \t"));
+    }
+    return monitors.toOwnedSlice(a);
+}
+test "xrandr monitor list ignores header and index" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const monitors = try parseMonitors(arena.allocator(), "Monitors: 2\n 0: +*eDP-1 1920/344x1080/194+0+0  eDP-1\n 1: +HDMI-1 2560/597x1440/336+1920+0  HDMI-1\n");
+    try std.testing.expectEqual(@as(usize, 2), monitors.len);
+    try std.testing.expectEqualStrings("+*eDP-1 1920/344x1080/194+0+0  eDP-1", monitors[0]);
+    try std.testing.expectEqualStrings("+HDMI-1 2560/597x1440/336+1920+0  HDMI-1", monitors[1]);
+}

@@ -401,4 +401,5 @@ test {
     _ = @import("util.zig");
     _ = @import("schedule.zig");
     _ = @import("clock.zig");
+    _ = @import("engine.zig");
 }

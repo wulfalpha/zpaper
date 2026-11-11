@@ -14,9 +14,10 @@ interval = 30m
 backend = auto
 backend_start = true
 
-# awww/swww only: while the daemon runs, put wallpapers back on monitors that are
+# While the daemon runs, put wallpapers back on monitors that are
 # reconnected, newly plugged in, or blanked by a renderer restart. Outputs showing
 # an image are left alone, so changes made outside zpaper are kept.
+# With feh on X11 this watches `xrandr --listmonitors` and reruns feh on changes.
 hotplug = true
 
 # Supported by the built-in adapters: crop, fit, stretch, no.
