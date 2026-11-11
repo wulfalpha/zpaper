@@ -14,6 +14,8 @@ which monitor, and keeps track of everything you've picked.
   layouts, or search and reapply old images
 - **Hotplug restore**: reconnected monitors and restarted renderers get their
   wallpaper back automatically (awww/swww on Wayland, feh + xrandr on X11)
+- **Change hook**: run a command such as `wal -i %s` or `matugen image %s`
+  after every change to theme your desktop from the wallpaper
 - **Holds**: pause rotation everywhere or on one monitor, indefinitely or for a
   set time (`zpaper hold 2h`)
 - **Favorites and exclusions** without touching your files

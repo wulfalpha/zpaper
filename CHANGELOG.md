@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.0 — 2026-11-11
+
+### Added
+- **Change hook**: `on_change = COMMAND` runs once after each successful
+  wallpaper change, in the background, with `%s` (image) and `%o` (output)
+  placeholders. Output goes to `$XDG_STATE_HOME/zpaper/on_change.log`.
+
 ## 0.6.1 — 2026-11-11
 
 ### Added

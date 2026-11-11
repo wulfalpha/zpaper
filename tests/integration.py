@@ -442,6 +442,54 @@ class Integration(unittest.TestCase):
         self.assertEqual(self.cmd('status').returncode, 0)
         self.assertEqual(len(self.feh_calls()), started)
 
+    def hook_calls(self):
+        path = self.root / 'hook-calls'
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text().splitlines()]
+
+    def install_hook(self):
+        hook = self.bin / 'theme-hook'
+        hook.write_text('#!/usr/bin/env python3\nimport json, os, pathlib, sys\n'
+                        'with (pathlib.Path(os.environ["FAKE_ROOT"]) / "hook-calls").open("a") as f:\n'
+                        '    f.write(json.dumps(sys.argv[1:]) + "\\n")\n')
+        hook.chmod(0o755)
+
+    def test_on_change_runs_once_per_change_with_placeholders(self):
+        self.install_hook()
+        self.config('on_change = theme-hook --image "%s" --output %o\n')
+        self.cmd('set', self.pics[2], self.pics[3])
+        self.assertTrue(self.wait_for(lambda: len(self.hook_calls()) == 1))
+        self.assertEqual(self.hook_calls()[0], ['--image', self.pics[2], '--output', 'DP-1'])
+        self.cmd('set', self.pics[1], '--output', 'HDMI-A-1')
+        self.assertTrue(self.wait_for(lambda: len(self.hook_calls()) == 2))
+        self.assertEqual(self.hook_calls()[1], ['--image', self.pics[1], '--output', 'HDMI-A-1'])
+
+    def test_on_change_appends_image_and_failures_do_not_fail_change(self):
+        self.install_hook()
+        self.config('on_change = theme-hook\n')
+        self.cmd('set', self.pics[2])
+        self.assertTrue(self.wait_for(lambda: self.hook_calls() == [[self.pics[2]]]))
+        self.config('on_change = missing-hook-program\n')
+        self.cmd('set', self.pics[3])
+        self.assertEqual(self.shown()['DP-1'], self.pics[3])
+        log = self.root / 'state' / 'zpaper' / 'on_change.log'
+        self.assertTrue(self.wait_for(lambda: log.exists() and 'missing-hook-program' in log.read_text()))
+
+    def test_on_change_not_run_for_failed_change(self):
+        self.install_hook()
+        self.config('on_change = theme-hook\n')
+        (self.root / 'fail').write_text('*')
+        self.cmd('set', self.pics[2], ok=False)
+        time.sleep(.5)
+        self.assertEqual(self.hook_calls(), [])
+
+    def test_on_change_runs_for_feh(self):
+        self.install_hook()
+        self.config('on_change = theme-hook %o\n', backend='feh')
+        self.cmd('set', self.pics[2])
+        self.assertTrue(self.wait_for(lambda: self.hook_calls() == [['*', self.pics[2]]]))
+
     def test_corrupt_state_is_not_overwritten(self):
         self.cmd('hold')
         path = self.root / 'state' / 'zpaper' / 'state.json'

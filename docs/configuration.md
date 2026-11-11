@@ -29,7 +29,32 @@ stderr. `notify` is optional and a missing notification tool does not fail chang
 Disconnected outputs and saved non-image backgrounds are reported as skipped
 when restoring a layout; other connected outputs still apply. This release saves
 image paths, not solid-color backgrounds or renderer effects. Per-monitor collection
-assignments and change hooks are future work.
+assignments are future work.
+
+## Change hook
+
+`on_change` runs a command after every successful wallpaper change, which is
+handy for theming the desktop from the new image:
+
+```ini
+on_change = wal -q -i %s
+# or: on_change = matugen image %s
+```
+
+- `%s` is replaced with the image path and `%o` with the output name (`*` for
+  feh and custom setters). If `%s` is absent, the image is appended as the last
+  argument. Quoting works like `setter`; no shell is involved, so point it at a
+  script if you need pipes or several commands.
+- It runs **once per change**, even when several monitors change together, using
+  the first changed output in sorted name order. Use `zpaper current --json` in a
+  script if you need every output.
+- Changes include rotation, manual commands, schedule switches, `refresh`, the
+  restore at daemon startup, and a fresh image for a newly connected monitor.
+  Restoring a known image after hotplug does not run it, nor does a failed change.
+- The command is started in the background through `setsid`, so a slow theme
+  generator never blocks zpaper. Its output and errors, including a missing
+  program, are appended to `$XDG_STATE_HOME/zpaper/on_change.log`
+  (default `~/.local/state/zpaper/on_change.log`).
 
 ## Hotplug restore
 

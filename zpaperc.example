@@ -30,6 +30,13 @@ transition = --transition-type wave --transition-duration 2 --filter Lanczos3
 timeout = 15s
 notify = false
 
+# Optional command to run after each wallpaper change, e.g. to theme your desktop
+# from the new image. %s is the image, %o the output ("*" with feh/custom); if %s
+# is absent the image is appended. Runs in the background without a shell; its
+# output goes to ~/.local/state/zpaper/on_change.log.
+# on_change = wal -q -i %s
+# on_change = matugen image %s
+
 # Optional fixed image; overrides directory rotation.
 # wallpaper = ~/Pictures/favorite.jpg
 

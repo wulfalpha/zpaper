@@ -20,6 +20,7 @@ pub const Config = struct {
     interval: u64 = 0,
     backend: Kind = .auto,
     setter: []const []const u8 = &.{},
+    on_change: []const []const u8 = &.{},
     transition: []const []const u8 = &.{},
     recursive: bool = false,
     notify: bool = false,
@@ -161,7 +162,7 @@ pub fn parse(rt: Runtime, a: u.A, content: []const u8) !Config {
     return cfg;
 }
 fn set(rt: Runtime, a: u.A, cfg: *Config, key: []const u8, raw: []const u8) !void {
-    const value = if (u.eql(key, "setter") or u.eql(key, "transition")) raw else try scalar(a, raw);
+    const value = if (u.eql(key, "setter") or u.eql(key, "transition") or u.eql(key, "on_change")) raw else try scalar(a, raw);
     if (u.eql(key, "daemon")) {
         cfg.daemon = try boolean(value);
     } else if (u.eql(key, "collection")) {
@@ -178,6 +179,8 @@ fn set(rt: Runtime, a: u.A, cfg: *Config, key: []const u8, raw: []const u8) !voi
     } else if (u.eql(key, "setter")) {
         cfg.setter = try u.words(a, value);
         if (cfg.setter.len == 0) return error.EmptyCommand;
+    } else if (u.eql(key, "on_change")) {
+        cfg.on_change = try u.words(a, value);
     } else if (u.eql(key, "transition")) {
         cfg.transition = try u.words(a, value);
     } else if (u.eql(key, "recursive")) {

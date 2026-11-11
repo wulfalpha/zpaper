@@ -205,12 +205,45 @@ pub const Engine = struct {
                 try self.state.record(self.rt, self.a, after);
             }
             try self.resetTimer();
+            for (desired) |entry| if (outputChanged(after, entry)) {
+                self.runHook(entry.output, entry.image);
+                break;
+            };
             if (self.cfg.notify) {
                 _ = u.run(self.rt, self.a, &.{ "notify-send", "zpaper", "Wallpaper updated" }, 3) catch {};
                 u.diagnostic = "";
             }
         }
         if (failures > 0) return error.LayoutIncomplete;
+    }
+    fn outputChanged(after: []const Assignment, entry: Assignment) bool {
+        for (after) |applied| if (u.eql(applied.output, entry.output)) return u.eql(applied.image, entry.image);
+        return false;
+    }
+    // Run the on_change hook once per wallpaper change, detached through
+    // setsid so a slow theme generator never blocks the daemon. %s is the
+    // image and %o the output ("*" for global backends); without %s the image
+    // is appended. Output and errors go to the hook log, never to the caller.
+    fn runHook(self: *Engine, output: []const u8, image: []const u8) void {
+        if (self.cfg.on_change.len == 0) return;
+        self.spawnHook(output, image) catch |err| {
+            self.print("on_change: {s}\n", .{if (u.diagnostic.len > 0) u.diagnostic else @errorName(err)}) catch {};
+        };
+        u.diagnostic = "";
+    }
+    fn spawnHook(self: *Engine, output: []const u8, image: []const u8) !void {
+        var argv: std.ArrayList([]const u8) = .empty;
+        try argv.appendSlice(self.a, &.{ "setsid", "-f" });
+        var replaced = false;
+        for (self.cfg.on_change) |arg| {
+            if (std.mem.indexOf(u8, arg, "%s") != null) replaced = true;
+            try argv.append(self.a, try expandHook(self.a, arg, image, output));
+        }
+        if (!replaced) try argv.append(self.a, image);
+        const data_dir = try u.absolute(self.rt, self.a, try config.getDataDir(self.rt, self.a));
+        try std.Io.Dir.cwd().createDirPath(self.rt.io, data_dir);
+        const log_path = try std.fmt.allocPrint(self.a, "{s}/on_change.log", .{data_dir});
+        try u.runLogged(self.rt, self.a, argv.items, self.cfg.timeout, log_path);
     }
     fn prepare(self: *Engine) ![]const Assignment {
         try self.be().ready();
@@ -275,6 +308,7 @@ pub const Engine = struct {
         var names: std.ArrayList([]const u8) = .empty;
         var recorded = try self.a.dupe(Assignment, self.state.current);
         var new_layout = false;
+        var fresh_image: []const u8 = "";
         var changed = false;
         for (actual) |entry| {
             try names.append(self.a, entry.output);
@@ -295,6 +329,7 @@ pub const Engine = struct {
             if (known == null) {
                 // A fresh pick for a never-seen output is a real new image.
                 new_layout = true;
+                if (fresh_image.len == 0) fresh_image = image;
                 try self.state.addImage(self.a, image, try std.fmt.allocPrint(self.a, "{d}", .{self.now()}));
                 try self.state.markSeen(self.a, self.collectionName(), image);
                 try self.print("new output {s}: {s}\n", .{ entry.output, image });
@@ -309,6 +344,10 @@ pub const Engine = struct {
         }
         if (new_layout) {
             try self.state.record(self.rt, self.a, recorded);
+            for (recorded) |entry| if (u.eql(entry.image, fresh_image)) {
+                self.runHook(entry.output, entry.image);
+                break;
+            };
         } else if (changed) {
             self.state.current = recorded;
         }
@@ -637,4 +676,24 @@ test "xrandr monitor list ignores header and index" {
     try std.testing.expectEqual(@as(usize, 2), monitors.len);
     try std.testing.expectEqualStrings("+*eDP-1 1920/344x1080/194+0+0  eDP-1", monitors[0]);
     try std.testing.expectEqualStrings("+HDMI-1 2560/597x1440/336+1920+0  HDMI-1", monitors[1]);
+}
+// Single pass so a path containing "%o" is never expanded a second time.
+fn expandHook(a: u.A, arg: []const u8, image: []const u8, output: []const u8) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    var i: usize = 0;
+    while (i < arg.len) : (i += 1) {
+        if (arg[i] == '%' and i + 1 < arg.len and (arg[i + 1] == 's' or arg[i + 1] == 'o')) {
+            try out.appendSlice(a, if (arg[i + 1] == 's') image else output);
+            i += 1;
+        } else try out.append(a, arg[i]);
+    }
+    return out.toOwnedSlice(a);
+}
+test "hook placeholders expand once" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expectEqualStrings("/p/%o.png on DP-1", try expandHook(a, "%s on %o", "/p/%o.png", "DP-1"));
+    try std.testing.expectEqualStrings("--image=/x.png", try expandHook(a, "--image=%s", "/x.png", "*"));
+    try std.testing.expectEqualStrings("100%", try expandHook(a, "100%", "/x.png", "*"));
 }
