@@ -1,0 +1,59 @@
+# Copy to ~/.config/zpaper/zpaperc. Start explicitly with: zpaper daemon
+# Bare zpaper runs once by default. Set daemon = true to keep it running.
+# Explicit commands such as next always perform just that action.
+daemon = false
+dir = ~/wallstreet
+recursive = true
+interval = 30m
+
+# Optional initial collection. A previously saved selection takes precedence.
+# collection = quiet
+
+# auto: Wayland uses awww if installed, otherwise swww; X11 uses feh.
+# Choose awww or swww for monitor queries, targeting, and layout restoration.
+backend = auto
+backend_start = true
+
+# Supported by the built-in adapters: crop, fit, stretch, no.
+resize = crop
+# Backend-specific argv, parsed without invoking a shell.
+# Wayland only with built-in adapters; custom setters also receive these args.
+transition = --transition-type wave --transition-duration 2 --filter Lanczos3
+
+# Maximum time for each backend invocation (1s–300s).
+timeout = 15s
+notify = false
+
+# Optional fixed image; overrides directory rotation.
+# wallpaper = ~/Pictures/favorite.jpg
+
+# Custom setters have global-only, recorded-state semantics.
+# Quotes and backslash escapes group arguments. Embedded %s is supported.
+# If %s is absent, the image is appended. No shell evaluation takes place.
+# A custom setter must exit after applying the wallpaper.
+# backend = custom
+# setter = hyprctl hyprpaper wallpaper ",%s"
+
+# Named collections go after all global settings. Enable a section by uncommenting
+# its header and dir. Interval and recursive inherit the globals when omitted.
+# List with `zpaper collections`; select with `zpaper use quiet`.
+# `zpaper use default` returns to the top-level dir/wallpaper configuration.
+#
+# [collection.quiet]
+# dir = ~/Pictures/wallpapers/quiet
+# interval = 45m
+#
+# [collection.landscapes]
+# dir = ~/Pictures/wallpapers/landscapes
+# interval = 20m
+# recursive = false
+
+# Optional daily schedule, using the local timezone. Define the named collections
+# above before enabling this example. The most recent entry remains active until
+# the next one; a manual choice lasts until the next scheduled period.
+# Holds still apply. Inspect with `zpaper schedule`; return early with
+# `zpaper schedule resume`.
+#
+# [schedule]
+# 08:00 = landscapes
+# 20:00 = quiet
