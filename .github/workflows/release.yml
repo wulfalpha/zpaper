@@ -51,7 +51,7 @@ jobs:
           name="zpaper-${VERSION}-${{ matrix.arch }}-linux"
           mkdir -p "dist/$name/contrib"
           cp zig-out/bin/zpaper README.md LICENSE CHANGELOG.md zpaperc.example "dist/$name/"
-          cp contrib/zpaper.service contrib/zpaper-pick "dist/$name/contrib/"
+          cp -r contrib/zpaper.service contrib/zpaper-pick contrib/completions "dist/$name/contrib/"
           tar -C dist -czf "$name.tar.gz" "$name"
 
       - uses: actions/upload-artifact@v4

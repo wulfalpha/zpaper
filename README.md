@@ -47,8 +47,8 @@ tar xzf "zpaper-$version-$arch-linux.tar.gz"
 install -Dm755 "zpaper-$version-$arch-linux/zpaper" ~/.local/bin/zpaper
 ```
 
-Each archive also contains the example config, the systemd unit and
-`zpaper-pick`. `SHA256SUMS` on the release lists checksums.
+Each archive also contains the example config, the systemd unit, shell
+completions and `zpaper-pick`. `SHA256SUMS` on the release lists checksums.
 
 To build from source instead, see the quick start below.
 
@@ -63,6 +63,12 @@ mkdir -p ~/.config/zpaper
 cp zpaperc.example ~/.config/zpaper/zpaperc   # set dir = your wallpaper folder
 zpaper check                                  # validate the config
 zpaper daemon                                 # start rotating
+```
+
+Fish completions (commands, collections, and connected outputs for `--output`):
+
+```sh
+cp contrib/completions/zpaper.fish ~/.config/fish/completions/
 ```
 
 Start `zpaper daemon` from your window manager's autostart, or use the systemd user
