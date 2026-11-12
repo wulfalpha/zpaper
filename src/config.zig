@@ -43,6 +43,18 @@ pub const Config = struct {
         for (self.outputs) |rule| if (u.eql(rule.output, output)) return rule;
         return null;
     }
+    // Valid but probably unintended settings, one note per line.
+    pub fn notes(self: Config, a: u.A) ![]const u8 {
+        var text: std.ArrayList(u8) = .empty;
+        for (self.schedules) |schedule| {
+            var used = false;
+            for (self.outputs) |rule| if (u.eql(rule.schedule, schedule.name)) {
+                used = true;
+            };
+            if (!used) try text.appendSlice(a, try std.fmt.allocPrint(a, "note: schedule '{s}' is not used; its name does not attach it to a monitor. Add `schedule = {s}` to an [output.NAME] section\n", .{ schedule.name, schedule.name }));
+        }
+        return text.toOwnedSlice(a);
+    }
     pub fn namedSchedule(self: Config, name: []const u8) ?NamedSchedule {
         for (self.schedules) |schedule| if (u.eql(schedule.name, name)) return schedule;
         return null;
@@ -410,6 +422,9 @@ test "named schedules for outputs" {
     try std.testing.expectEqual(@as(u16, 420), external.rules[0].minute);
     try std.testing.expectEqualStrings("night", external.rules[1].collection);
     try std.testing.expectEqualStrings("external", cfg.outputRule("HDMI-A-1").?.schedule);
+    try std.testing.expectEqualStrings("", try cfg.notes(a));
+    const unused = try parse(runtime.testing(), a, "dir=/tmp\n[schedule.HDMI-A-1]\n07:00=default\n");
+    try std.testing.expect(std.mem.indexOf(u8, try unused.notes(a), "schedule 'HDMI-A-1' is not used") != null);
     for ([_][]const u8{
         "dir=/tmp\n[output.DP-1]\nschedule=missing",
         "dir=/tmp\n[schedule.s]\n07:00=default\n[output.DP-1]\nschedule=s\ncollection=default",

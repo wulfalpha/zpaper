@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.10.1 — 2026-11-11
+
+### Added
+- `check` and `reload` note a `[schedule.NAME]` that no `[output.NAME]` section
+  uses. A schedule named after a monitor is not attached to it, so such a
+  config was valid but silently had no effect.
+
 ## 0.10.0 — 2026-11-11
 
 Per-monitor schedules.

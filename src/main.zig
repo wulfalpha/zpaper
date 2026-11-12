@@ -292,7 +292,7 @@ fn daemonLoop(rt: Runtime, a: u.A, paths: ipc.Paths, cfg_path: []const u8, requi
                         if (e.dirty) state.save(rt, request_a, paths.state, e.state) catch |err| {
                             e.print("state save failed: {s}\n", .{@errorName(err)}) catch {};
                         };
-                        const message = try std.fmt.allocPrint(request_a, "configuration reloaded\n{s}", .{e.message.items});
+                        const message = try std.fmt.allocPrint(request_a, "configuration reloaded\n{s}{s}", .{ try updated.notes(request_a), e.message.items });
                         cfg_arena.deinit();
                         cfg_arena = replacement;
                         cfg = updated;
@@ -384,6 +384,7 @@ fn run(rt: Runtime, a: u.A, argv: []const []const u8) !bool {
     if (req.action == .check) {
         const checked = try config.load(rt, a, cfg_path, true);
         try std.Io.File.stdout().writeStreamingAll(rt.io, "configuration is valid\n");
+        try std.Io.File.stdout().writeStreamingAll(rt.io, try checked.notes(a));
         var probe = engine.Engine{ .rt = rt, .a = a, .cfg = checked, .state = .{} };
         if (probe.outputsIgnored()) |note| try std.Io.File.stdout().writeStreamingAll(rt.io, try std.fmt.allocPrint(a, "{s}\n", .{note}));
         return true;

@@ -81,6 +81,8 @@ schedule = external
 ```
 
 This works with awww, swww, and feh (with `xrandr`), like per-monitor collections.
+A schedule's name is only a label: naming it after a monitor does not attach it.
+`check` and `reload` note any named schedule that no `[output.NAME]` section uses.
 
 - A scheduled monitor draws from whichever collection its timetable selects now,
   rotating on that collection's interval. At each scheduled time the daemon

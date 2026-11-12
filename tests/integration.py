@@ -1240,6 +1240,16 @@ class Integration(unittest.TestCase):
         time.sleep(1.5)
         self.assertEqual(self.shown(), shown)
 
+    def test_unused_schedule_is_noted(self):
+        # A schedule named after a monitor is not attached to it.
+        self.make_collections()
+        self.config(extra=self.collection_sections + '[schedule.HDMI-A-1]\n00:00 = work\n')
+        self.assertIn("schedule 'HDMI-A-1' is not used", self.cmd('check').stdout)
+        self.start()
+        self.assertIn("schedule 'HDMI-A-1' is not used", self.cmd('reload').stdout)
+        self.output_schedule()
+        self.assertNotIn('not used', self.cmd('check').stdout)
+
     def test_output_schedule_with_feh(self):
         self.output_schedule(backend='feh', output='HDMI-1')
         self.monitors(self.EDP, self.HDMI)
