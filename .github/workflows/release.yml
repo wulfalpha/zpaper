@@ -33,6 +33,11 @@ jobs:
             echo "Tag $GITHUB_REF_NAME does not match build.zig.zon version $version" >&2
             exit 1
           fi
+          readme_version=$(sed -n 's/^version=//p' README.md)
+          if [ "$readme_version" != "$version" ]; then
+            echo "README install version $readme_version does not match $version" >&2
+            exit 1
+          fi
           echo "VERSION=$version" >> "$GITHUB_ENV"
 
       - name: Unit tests

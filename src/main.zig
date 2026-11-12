@@ -27,6 +27,7 @@ const help = "zpaper " ++ version ++ " — wallpaper rotation with memory\n" ++
     \\  hold [DURATION]           Pause rotation indefinitely or for e.g. 2h
     \\  resume                    Release holds and restart the rotation timer
     \\  current | status          Query the backend / show recorded daemon state
+    \\  explain                   Explain each output's collection, holds and schedule
     \\  history | layouts         Image history / desktop layout timeline
     \\  search TEXT | select N    Search image paths / apply history entry
     \\  favorite [IMAGE...]       Favorite current image(s) or explicit paths
@@ -44,9 +45,10 @@ const help = "zpaper " ++ version ++ " — wallpaper rotation with memory\n" ++
     \\  restart                   Restart the daemon, picking up a newly installed binary
     \\  check                     Validate configuration without setting wallpaper
     \\
-    \\--json: current, status, history, layouts, favorites, list, collections, schedule.
+    \\--json: current, status, explain, history, layouts, favorites, list, collections, schedule.
     \\--output: set, next, hold, resume, select, favorite/unfavorite, exclude/include,
     \\          random-favorite, schedule resume. Needs awww, swww, or feh with xrandr.
+    \\          explain also accepts recorded or configured output names.
     \\Legacy --next, --undo, --history, --favorite, etc. remain aliases.
     \\No command means 'next', or 'daemon' when daemon=true in config.
     \\interval=0 disables automatic rotation; daemon runs in the foreground.
@@ -133,11 +135,11 @@ fn validate(req: Request) !void {
     if (req.action == .schedule and count == 1 and req.json) return error.JsonNotApplicable;
     if (req.action == .schedule and count == 0 and req.output != null) return error.OutputNotApplicable;
     if (req.output != null) switch (req.action) {
-        .set, .next, .hold, .@"resume", .select, .favorite, .unfavorite, .exclude, .include, .random_favorite, .schedule => {},
+        .set, .next, .hold, .@"resume", .select, .favorite, .unfavorite, .exclude, .include, .random_favorite, .schedule, .explain => {},
         else => return error.OutputNotApplicable,
     };
     if (req.json) switch (req.action) {
-        .current, .status, .history, .layouts, .favorites, .list, .collections, .schedule => {},
+        .current, .status, .explain, .history, .layouts, .favorites, .list, .collections, .schedule => {},
         else => return error.JsonNotApplicable,
     };
 }
@@ -514,4 +516,6 @@ test {
     _ = @import("schedule.zig");
     _ = @import("clock.zig");
     _ = @import("engine.zig");
+    _ = @import("policy.zig");
+    _ = @import("explain.zig");
 }

@@ -27,9 +27,9 @@ function __zpaper_outputs
     __zpaper_query current --json | string match -rag '"output":"((?:[^"\\\\]|\\\\.)*)"' | path sort -u | string match -rv '^\*$'
 end
 
-set -l commands daemon set next previous hold resume current status history layouts search select favorite unfavorite favorites random-favorite exclude include collections use schedule list restore refresh import-legacy clear-history reload stop restart check
-set -l json_commands current status history layouts favorites list collections schedule
-set -l output_commands set next hold resume select favorite unfavorite exclude include random-favorite schedule
+set -l commands daemon set next previous hold resume current status explain history layouts search select favorite unfavorite favorites random-favorite exclude include collections use schedule list restore refresh import-legacy clear-history reload stop restart check
+set -l json_commands current status explain history layouts favorites list collections schedule
+set -l output_commands set next hold resume select favorite unfavorite exclude include random-favorite schedule explain
 set -l image_commands set favorite unfavorite exclude include
 
 complete -c zpaper -f
@@ -48,6 +48,7 @@ complete -c zpaper -n "not __fish_seen_subcommand_from $commands" -a hold -d 'Pa
 complete -c zpaper -n "not __fish_seen_subcommand_from $commands" -a resume -d 'Release holds'
 complete -c zpaper -n "not __fish_seen_subcommand_from $commands" -a current -d 'Query the renderer'
 complete -c zpaper -n "not __fish_seen_subcommand_from $commands" -a status -d 'Show recorded state'
+complete -c zpaper -n "not __fish_seen_subcommand_from $commands" -a explain -d 'Explain output policy, holds and schedules'
 complete -c zpaper -n "not __fish_seen_subcommand_from $commands" -a history -d 'Image history'
 complete -c zpaper -n "not __fish_seen_subcommand_from $commands" -a layouts -d 'Layout timeline'
 complete -c zpaper -n "not __fish_seen_subcommand_from $commands" -a search -d 'Search image history'

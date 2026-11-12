@@ -43,7 +43,7 @@ the [releases page](https://github.com/wulfalpha/zpaper/releases). They need gli
 
 ```sh
 arch=$(uname -m)   # x86_64 or aarch64
-version=0.8.0
+version=0.10.1
 curl -LO "https://github.com/wulfalpha/zpaper/releases/download/v$version/zpaper-$version-$arch-linux.tar.gz"
 tar xzf "zpaper-$version-$arch-linux.tar.gz"
 install -Dm755 "zpaper-$version-$arch-linux/zpaper" ~/.local/bin/zpaper
@@ -90,6 +90,7 @@ zpaper exclude                           # never rotate to this again
 zpaper history                           # recently shown images
 zpaper use landscapes                    # switch collection
 zpaper status --json
+zpaper explain                           # why each output follows its current policy
 zpaper-pick                              # pick a monitor, then an image (fzf)
 zpaper refresh                           # reapply the saved layout
 zpaper reload                            # re-read the config

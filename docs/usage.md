@@ -44,6 +44,8 @@ zpaper exclude                 # omit current image(s) from future rotation
 zpaper include /path/image.png
 zpaper current
 zpaper status --json
+zpaper explain                 # recorded wallpapers and effective output policy
+zpaper explain --output DP-1
 zpaper history
 zpaper search forest
 zpaper select 3
@@ -94,7 +96,34 @@ zpaper restart                 # e.g. after installing a new version
 not prevent an explicit manual selection or history restoration.
 
 `schedule`, `collections`, `history`, `layouts`, `favorites`, `list`, `current`,
-and `status` support `--json`.
+`status`, and `explain` support `--json`.
+
+## Explaining output policy
+
+`zpaper explain` shows each recorded or configured output's recorded image,
+effective collection, fixed assignment or schedule, active hold, interval deadline,
+and next scheduled change. Use `--output DP-1,HDMI-A-1` to select outputs, or
+`--json` for structured data. Like other commands, it uses the running daemon's
+configuration when one is available.
+
+This is a read-only explanation of current policy, not a query of what the renderer
+currently displays or which monitors are connected. Configured outputs without a
+recorded wallpaper are included. For global-only backends the report uses `*` and
+explains why per-output assignments are ignored. With no daemon running, the report
+notes that automatic changes are inactive.
+
+Holds block automatic interval and schedule changes; the longest applicable hold
+wins, and an indefinite global or output hold requires resume. A manual schedule
+override lasts until the next scheduled event but does **not** pause interval
+rotation. The report shows both deadlines separately. Schedule times use local
+civil time; interval and hold deadlines in JSON use Unix seconds. A due change may
+still wait for a hold, backend recovery, or the daemon's next tick.
+
+The collection shown is where future choices draw from, not proof of where the
+recorded image came from: explicit selections, holds, external renderer changes,
+and a pending schedule can leave a different image on screen. `current` queries
+the renderer when that backend supports it.
+
 ## Interactive picker
 
 The optional [zpaper-pick](../contrib/zpaper-pick) helper (Python 3 and `fzf`) picks

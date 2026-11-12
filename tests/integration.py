@@ -1150,6 +1150,76 @@ class Integration(unittest.TestCase):
             return None
         return next((c for c in self.state().get('schedule_cursors', []) if c['name'] == 'ext'), None)
 
+    def test_explain_named_schedule_is_read_only_and_filters_outputs(self):
+        self.output_schedule()
+        self.cmd('next')
+        before = self.state()
+        shown = self.shown()
+        calls = (self.root / 'calls').read_text()
+        report = json.loads(self.cmd('explain', '--output', 'HDMI-A-1', '--json').stdout)
+        self.assertFalse(report['daemon'])
+        self.assertEqual(report['source'], 'recorded')
+        self.assertEqual(len(report['outputs']), 1)
+        out = report['outputs'][0]
+        self.assertEqual(out['collection'], 'work')
+        self.assertEqual(out['source'], 'named_schedule')
+        self.assertEqual(out['schedule_name'], 'ext')
+        self.assertTrue(out['schedule']['manual_override'])
+        self.assertEqual(out['recorded_image'], shown['HDMI-A-1'])
+        text = self.cmd('explain', '--output', 'HDMI-A-1').stdout
+        self.assertIn('manual choice until scheduled change', text)
+        self.assertIn('Daemon is not running', text)
+        self.assertEqual(self.state(), before)
+        self.assertEqual(self.shown(), shown)
+        self.assertEqual((self.root / 'calls').read_text(), calls)
+        self.cmd('explain', '--output', 'unknown', ok=False)
+        self.cmd('explain', '--output', 'DP-1,DP-1', ok=False)
+        self.cmd('explain', 'extra', ok=False)
+
+    def test_explain_global_schedule_and_output_holds(self):
+        self.output_schedule(global_rule='quiet')
+        self.cmd('next')
+        self.cmd('hold', '2h', '--output', 'DP-1')
+        report = json.loads(self.cmd('explain', '--json').stdout)
+        outputs = {o['output']: o for o in report['outputs']}
+        self.assertEqual(outputs['DP-1']['source'], 'global_schedule')
+        self.assertTrue(outputs['DP-1']['held'])
+        self.assertGreater(outputs['DP-1']['hold_until'], time.time())
+        self.assertFalse(outputs['HDMI-A-1']['held'])
+        self.cmd('hold')
+        self.assertTrue(all(o['hold_until'] == -1 for o in json.loads(self.cmd('explain', '--json').stdout)['outputs']))
+
+    def test_explain_configured_output_without_recorded_wallpaper(self):
+        self.output_schedule()
+        report = json.loads(self.cmd('explain', '--json').stdout)
+        self.assertEqual(len(report['outputs']), 1)
+        self.assertEqual(report['outputs'][0]['output'], 'HDMI-A-1')
+        self.assertIsNone(report['outputs'][0]['recorded_image'])
+        self.assertFalse((self.root / 'state' / 'zpaper' / 'state.json').exists())
+        self.assertFalse((self.root / 'calls').exists())
+
+    def test_explain_fixed_assignment_through_daemon(self):
+        self.make_collections()
+        self.config(extra=self.collection_sections + '[output.DP-1]\ncollection = work\n')
+        self.cmd('next')
+        self.start()
+        out = json.loads(self.cmd('explain', '--output', 'DP-1', '--json').stdout)
+        self.assertTrue(out['daemon'])
+        self.assertEqual(out['outputs'][0]['source'], 'fixed_collection')
+        self.assertEqual(out['outputs'][0]['collection'], 'work')
+        self.assertFalse(out['outputs'][0]['schedule']['enabled'])
+
+    def test_explain_global_backend_reports_ignored_assignments(self):
+        self.output_schedule(backend='feh')
+        self.cmd('next')
+        report = json.loads(self.cmd('explain', '--json').stdout)
+        self.assertIn('xrandr could not list monitors', report['note'])
+        self.assertEqual(len(report['outputs']), 1)
+        self.assertEqual(report['outputs'][0]['output'], '*')
+        self.assertEqual(report['outputs'][0]['collection'], 'default')
+        self.assertEqual(report['outputs'][0]['source'], 'active_collection')
+        self.assertFalse(report['outputs'][0]['schedule']['enabled'])
+
     def test_output_schedule_selects_collection(self):
         self.output_schedule()
         self.cmd('next')

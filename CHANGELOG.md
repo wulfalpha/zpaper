@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- `zpaper explain [--output NAME[,NAME]] [--json]` reports recorded wallpapers,
+  effective output collections, holds, schedule overrides, and upcoming deadlines.
+- Release validation checks the README install version as well as the release tag.
+
+### Changed
+- Output selection and scheduling decisions now live in a pure policy module,
+  shared by rotation planning and explanations; backend application and successful
+  state commits remain in the engine.
+
+### Fixed
+- The README install example now selects 0.10.1 instead of 0.8.0.
+
 ## 0.10.1 — 2026-11-11
 
 ### Added

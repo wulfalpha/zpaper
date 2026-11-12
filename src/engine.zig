@@ -8,8 +8,10 @@ const config = @import("config.zig");
 const backend = @import("backend.zig");
 const state_mod = @import("state.zig");
 const picker = @import("picker.zig");
+const policy = @import("policy.zig");
+const explanation = @import("explain.zig");
 const Assignment = state_mod.Assignment;
-pub const Action = enum { set, next, previous, hold, @"resume", current, status, history, layouts, search, select, favorite, unfavorite, favorites, random_favorite, exclude, include, list, restore, import_legacy, clear_history, collections, use, schedule, daemon, stop, restart, reload, check };
+pub const Action = enum { set, next, previous, hold, @"resume", current, status, explain, history, layouts, search, select, favorite, unfavorite, favorites, random_favorite, exclude, include, list, restore, import_legacy, clear_history, collections, use, schedule, daemon, stop, restart, reload, check };
 pub const Request = struct {
     action: Action = .next,
     args: []const []const u8 = &.{},
@@ -36,9 +38,12 @@ pub const Engine = struct {
     fn now(self: *Engine) i64 {
         return self.now_override orelse clock.now(self.rt);
     }
+    fn policyContext(self: *Engine) policy.Context {
+        const time = self.now();
+        return .{ .cfg = self.cfg, .state = self.state, .now = time, .local = clock.localAt(time) catch null, .per_output = self.perOutput() };
+    }
     fn scheduleWindow(self: *Engine) !?scheduling.Window {
-        if (self.cfg.schedule.len == 0) return null;
-        return scheduling.evaluate(self.cfg.schedule, try clock.localAt(self.now()));
+        return self.policyContext().scheduleWindow();
     }
     pub fn rememberManualChoice(self: *Engine, action: Action) !void {
         if (!self.dirty) return;
@@ -98,8 +103,7 @@ pub const Engine = struct {
         try self.print("{s} follows schedule {s} again (holds still apply)\n", .{ output, rule.schedule });
     }
     fn namedWindow(self: *Engine, name: []const u8) !?scheduling.Window {
-        const schedule = self.cfg.namedSchedule(name) orelse return null;
-        return scheduling.evaluate(schedule.rules, try clock.localAt(self.now()));
+        return self.policyContext().namedWindow(name);
     }
     fn ackSchedule(self: *Engine, name: []const u8, window: scheduling.Window, manual: bool) !void {
         try self.state.setScheduleCursor(self.a, .{ .name = name, .cursor = scheduling.acknowledge(window, manual), .collection = window.current.collection });
@@ -115,14 +119,13 @@ pub const Engine = struct {
         var connected: ?[]const Assignment = null;
         for (self.cfg.schedules) |schedule| {
             const window = (try self.namedWindow(schedule.name)).?;
-            const previous = self.state.scheduleCursor(schedule.name) orelse {
-                try self.ackSchedule(schedule.name, window, false);
-                continue;
-            };
-            if (!scheduling.due(window, previous.cursor)) continue;
-            if (u.eql(previous.collection, window.current.collection)) {
-                try self.ackSchedule(schedule.name, window, false);
-                continue;
+            switch (self.policyContext().namedDecision(schedule.name, window)) {
+                .wait => continue,
+                .acknowledge => {
+                    try self.ackSchedule(schedule.name, window, false);
+                    continue;
+                },
+                .change => {},
             }
             if (connected == null) connected = try self.current();
             try self.switchScheduled(schedule.name, window, connected.?, null);
@@ -134,38 +137,35 @@ pub const Engine = struct {
     // change, since a monitor that connects later picks from the current
     // collection anyway.
     fn switchScheduled(self: *Engine, name: []const u8, window: scheduling.Window, connected: []const Assignment, only: ?[]const u8) !void {
-        var filter: std.ArrayList(u8) = .empty;
-        var found = false;
-        for (connected) |entry| {
-            const rule = self.cfg.outputRule(entry.output) orelse continue;
-            if (!u.eql(rule.schedule, name)) continue;
-            if (only) |output| if (!u.eql(output, entry.output)) continue;
-            found = true;
-            if (self.state.held(entry.output, self.now())) continue;
-            if (filter.items.len > 0) try filter.append(self.a, ',');
-            try filter.appendSlice(self.a, entry.output);
-        }
-        if (!found) return self.ackSchedule(name, window, false);
-        if (filter.items.len == 0) return;
+        const plan = try self.policyContext().scheduleTargets(self.a, name, connected, only);
+        if (!plan.found) return self.ackSchedule(name, window, false);
+        if (plan.outputs.len == 0) return;
+        const filter = try std.mem.join(self.a, ",", plan.outputs);
         const was_dirty = self.dirty;
         self.dirty = false;
         defer self.dirty = self.dirty or was_dirty;
-        try self.rotateAssigned(true, filter.items, false);
+        try self.rotateAssigned(true, filter, false);
         if (!self.dirty) return;
         try self.ackSchedule(name, window, false);
-        try self.print("schedule {s}: {d:0>2}:{d:0>2} -> {s} ({s})\n", .{ name, window.current.minute / 60, window.current.minute % 60, window.current.collection, filter.items });
+        try self.print("schedule {s}: {d:0>2}:{d:0>2} -> {s} ({s})\n", .{ name, window.current.minute / 60, window.current.minute % 60, window.current.collection, filter });
     }
     // Returns true while a schedule change takes precedence over interval
     // rotation (including a deferred change while all target outputs are held).
     pub fn applySchedule(self: *Engine) !bool {
         const window = (try self.scheduleWindow()) orelse return false;
-        if (!scheduling.due(window, self.state.schedule_cursor)) return false;
-        if (self.state.held("*", self.now())) return true;
+        const context = self.policyContext();
+        // Avoid a backend query when no schedule work is due or a global
+        // hold blocks it. Connectivity is an input to the policy decision.
+        switch (context.globalDecision(window, true)) {
+            .wait => return false,
+            .held => return true,
+            else => {},
+        }
+        const decision = context.globalDecision(window, try self.hasUnassignedOutput());
         const before = self.state;
-        if (!(try self.hasUnassignedOutput())) {
-            // Every monitor has its own collection: switch without a change.
+        if (decision == .record) {
             self.state.collection = window.current.collection;
-        } else if (!u.eql(self.collectionName(), window.current.collection) or self.state.current.len == 0) {
+        } else if (decision == .rotate) {
             self.state.collection = window.current.collection;
             self.rotateActive(true) catch |err| {
                 if (!self.dirty) {
@@ -185,36 +185,12 @@ pub const Engine = struct {
         try self.print("schedule: {d:0>2}:{d:0>2} -> {s}\n", .{ window.current.minute / 60, window.current.minute % 60, window.current.collection });
         return true;
     }
-    const ScheduleInfo = struct {
-        enabled: bool,
-        timezone: []const u8 = "local",
-        current: ?scheduling.Event = null,
-        next: ?scheduling.Event = null,
-        manual_override: bool = false,
-        held: bool = false,
-        pending: bool = false,
-    };
+    const ScheduleInfo = policy.ScheduleInfo;
     fn scheduleInfo(self: *Engine) !ScheduleInfo {
-        const window = (try self.scheduleWindow()) orelse return .{ .enabled = false };
-        const pending = scheduling.due(window, self.state.schedule_cursor);
-        return .{ .enabled = true, .current = window.current, .next = scheduling.nextChange(self.cfg.schedule, window, self.state.schedule_cursor), .manual_override = if (self.state.schedule_cursor) |cursor| cursor.manual and !pending else false, .held = self.state.held("*", self.now()), .pending = pending };
+        return self.policyContext().scheduleInfo();
     }
     fn namedScheduleInfo(self: *Engine, schedule: config.NamedSchedule) !ScheduleInfo {
-        const window = (try self.namedWindow(schedule.name)).?;
-        const previous = self.state.scheduleCursor(schedule.name);
-        const cursor = if (previous) |known| known.cursor else null;
-        const pending = if (previous) |known| scheduling.due(window, cursor) and !u.eql(known.collection, window.current.collection) else false;
-        var held = self.state.held("*", self.now());
-        if (!held) {
-            var any = false;
-            held = true;
-            for (self.cfg.outputs) |rule| if (u.eql(rule.schedule, schedule.name)) {
-                any = true;
-                if (!self.state.held(rule.output, self.now())) held = false;
-            };
-            held = held and any;
-        }
-        return .{ .enabled = true, .current = window.current, .next = scheduling.nextChange(schedule.rules, window, cursor), .manual_override = if (cursor) |c| c.manual and !pending else false, .held = held, .pending = pending };
+        return self.policyContext().namedScheduleInfo(schedule);
     }
     fn scheduleOutputs(self: *Engine, name: []const u8) ![]const []const u8 {
         var outputs: std.ArrayList([]const u8) = .empty;
@@ -317,20 +293,13 @@ pub const Engine = struct {
     // The collection an [output.NAME] section gives a monitor: its fixed
     // collection, or what its [schedule.NAME] selects right now.
     fn assignedCollection(self: *Engine, output: []const u8) ?[]const u8 {
-        const rule = self.cfg.outputRule(output) orelse return null;
-        if (rule.collection.len > 0) return rule.collection;
-        const schedule = self.cfg.namedSchedule(rule.schedule) orelse return null;
-        const local = clock.localAt(self.now()) catch return schedule.rules[0].collection;
-        return scheduling.evaluate(schedule.rules, local).?.current.collection;
+        return self.policyContext().assignedCollection(output);
     }
     fn assigned(self: *Engine, output: []const u8) bool {
-        return self.assignments() and self.cfg.outputRule(output) != null;
+        return self.policyContext().assigned(output);
     }
-    // The collection an output draws from: its [output.NAME] assignment, or
-    // the active collection that `use` and the schedule control.
     fn collectionFor(self: *Engine, output: []const u8) []const u8 {
-        if (self.assignments()) if (self.assignedCollection(output)) |name| return name;
-        return self.collectionName();
+        return self.policyContext().collectionFor(output);
     }
     fn settings(self: *Engine) !config.Config {
         return self.cfg.effective(self.collectionName()) catch return u.fail(self.a, "collection '{s}' is not defined; select one with 'zpaper use NAME'", .{self.collectionName()});
@@ -587,13 +556,8 @@ pub const Engine = struct {
         const before = try self.prepare();
         const outputs = try self.targets(before, filter, automatic);
         if (outputs.len == 0) return;
-        if (paths.len > outputs.len) return error.TooManyImages;
-        var desired: std.ArrayList(Assignment) = .empty;
-        for (outputs, 0..) |output, i| {
-            if (paths.len > 1 and i >= paths.len) break;
-            try desired.append(self.a, .{ .output = output, .image = paths[if (paths.len == 1) 0 else i] });
-        }
-        try self.apply(before, desired.items, null, false);
+        const desired = try policy.planImages(self.a, outputs, paths);
+        try self.apply(before, desired, null, false);
     }
     pub fn rotate(self: *Engine, automatic: bool, filter: ?[]const u8) !void {
         if (automatic and self.state.held("*", self.now())) return;
@@ -907,18 +871,11 @@ pub const Engine = struct {
         const Pick = struct { collection: []const u8, image: []const u8 };
         var picks: std.ArrayList(Pick) = .empty;
         var desired: std.ArrayList(Assignment) = .empty;
-        if (active_only and automatic) {
-            var unassigned = false;
-            for (before) |entry| if (!self.assigned(entry.output)) {
-                unassigned = true;
-            };
-            // Nothing follows the active collection; wait a full interval
-            // instead of re-checking every tick.
-            if (!unassigned) return self.resetTimer();
-        }
-        for (outputs) |output| {
-            if (active_only and self.assigned(output)) continue;
-            const name = self.collectionFor(output);
+        const plan = try self.policyContext().planRotation(self.a, before, outputs, automatic, active_only);
+        if (plan.reset_active_timer) return self.resetTimer();
+        for (plan.targets) |target| {
+            const output = target.output;
+            const name = target.collection;
             const image = for (picks.items) |pick| {
                 if (u.eql(pick.collection, name)) break pick.image;
             } else blk: {
@@ -939,6 +896,13 @@ pub const Engine = struct {
     pub fn execute(self: *Engine, req: Request) !void {
         const arg = if (req.args.len > 0) req.args[0] else "";
         switch (req.action) {
+            .explain => {
+                var context = self.policyContext();
+                // A configured xrandr executable is not enough if no X display
+                // is available. Explain the backend's actual targeting ability.
+                context.per_output = self.be().queryable() or self.fehMonitors() != null;
+                try self.message.appendSlice(self.a, try explanation.render(self.a, context, self.daemon, req.output, req.json, self.outputsIgnored()));
+            },
             .schedule => {
                 if (!u.eql(arg, "resume")) return self.showSchedule(req.json);
                 if (req.output) |output| return self.resumeOutput(output);
