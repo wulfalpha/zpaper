@@ -552,6 +552,22 @@ class Integration(unittest.TestCase):
         self.start()
         self.assertEqual(self.feh_calls()[-1], ['feh', '--bg-fill', self.pics[0], self.pics[1]])
 
+    def test_wayland_session_switch_restores_each_sessions_layout(self):
+        # niri, then qtile, then back to niri: the reverse of the test above.
+        self.cmd('set', self.pics[2], self.pics[3])
+        self.config(backend='feh')
+        self.monitors(self.EDP, self.HDMI)
+        self.cmd('set', self.pics[0], self.pics[1])
+        self.config()
+        self.display.write_text(json.dumps({'DP-1': '', 'HDMI-A-1': ''}))
+        self.start()
+        self.assertEqual(self.shown(), {'DP-1': self.pics[2], 'HDMI-A-1': self.pics[3]})
+        current = {entry['output']: entry['image'] for entry in self.state()['current']}
+        self.assertEqual(current, {'DP-1': self.pics[2], 'HDMI-A-1': self.pics[3]})
+        self.display.write_text(json.dumps({'DP-1': '', 'HDMI-A-1': ''}))
+        self.cmd('refresh')
+        self.assertEqual(self.shown(), {'DP-1': self.pics[2], 'HDMI-A-1': self.pics[3]})
+
     def test_feh_global_state_becomes_per_monitor(self):
         # State from 0.8 or a session without xrandr: one image for all.
         self.config(backend='feh')

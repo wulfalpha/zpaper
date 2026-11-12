@@ -348,7 +348,7 @@ pub const Engine = struct {
         } else if (successes > 0) {
             self.wallpaper_applied = true;
             self.state.collection = self.collectionName();
-            if (navigation != null and failures == 0 and state_mod.same(after, try self.fit(self.state.layouts[navigation.?].outputs))) {
+            if (navigation != null and failures == 0 and state_mod.same(after, try self.fit(self.state.layouts[navigation.?].outputs, before))) {
                 self.state.cursor = navigation.?;
                 self.state.current = after;
             } else {
@@ -459,11 +459,11 @@ pub const Engine = struct {
         if (names.items.len == 0) return;
         try self.rotate(false, try std.mem.join(self.a, ",", names.items));
     }
-    // A layout for feh with named X11 monitors. Entries for connected monitors
-    // are kept, and an old global "*" image covers every monitor. A layout
-    // from another session, naming none of these monitors (Wayland calls them
-    // differently), gives each monitor its last image recorded under its own
-    // name, so switching sessions brings back that session's layout.
+    // A layout for these monitor names. Entries for connected monitors are
+    // kept, and an old global "*" image covers every monitor. A layout from
+    // another session, naming none of these monitors (X11 and Wayland call
+    // them differently), gives each monitor its last image recorded under its
+    // own name, so switching sessions brings back that session's layout.
     fn fitMonitors(self: *Engine, layout: []const Assignment, names: []const []const u8) ![]const Assignment {
         var matched = false;
         var shared: ?[]const u8 = null;
@@ -489,8 +489,18 @@ pub const Engine = struct {
     // backends (feh, custom) set one wallpaper, so a per-output layout from a
     // Wayland session becomes its first existing image on "*". Per-output
     // backends already apply "*" to every output.
-    fn fit(self: *Engine, layout: []const Assignment) ![]const Assignment {
-        if (self.be().queryable()) return layout;
+    // `connected` is the renderer's current layout (from prepare()).
+    fn fit(self: *Engine, layout: []const Assignment, connected: []const Assignment) ![]const Assignment {
+        if (self.be().queryable()) {
+            // awww/swww apply "*" to every output, and a layout naming any
+            // connected output is applied as recorded (reporting the rest as
+            // disconnected). Only a layout from another session, naming none
+            // of these outputs, is mapped by name.
+            const names = try self.a.alloc([]const u8, connected.len);
+            for (connected, names) |entry, *name| name.* = entry.output;
+            for (layout) |entry| if (u.eql(entry.output, "*") or u.contains(names, entry.output)) return layout;
+            return self.fitMonitors(layout, names);
+        }
         if (self.fehMonitors()) |names| return self.fitMonitors(layout, names);
         for (layout) |entry| if (u.eql(entry.output, "*")) return self.a.dupe(Assignment, &.{entry});
         var image: []const u8 = if (layout.len > 0) layout[0].image else return layout;
@@ -737,8 +747,8 @@ pub const Engine = struct {
         try self.apply(before, desired.items, null, false);
     }
     fn navigate(self: *Engine, index: usize) !void {
-        const desired = try self.fit(self.state.layouts[index].outputs);
         const before = try self.prepare();
+        const desired = try self.fit(self.state.layouts[index].outputs, before);
         try self.apply(before, desired, index, false);
     }
     pub fn execute(self: *Engine, req: Request) !void {
@@ -818,8 +828,8 @@ pub const Engine = struct {
             },
             .restore => {
                 if (self.state.current.len == 0) return self.rotate(false, null);
-                const desired = try self.fit(self.state.current);
                 const before = try self.prepare();
+                const desired = try self.fit(self.state.current, before);
                 try self.apply(before, desired, null, true);
             },
             .hold => {

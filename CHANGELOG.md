@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.1 — 2026-11-11
+
+### Fixed
+- Switching from an X11 session back to Wayland now restores each monitor's last
+  image recorded under its Wayland name. In 0.9.0 this only worked in the
+  X11 direction: under awww/swww, the daemon's startup restore and `refresh`
+  skipped every monitor as disconnected (the saved layout used the X11 names),
+  and `status` listed the X11 names. awww's own cache hid this at login.
+
 ## 0.9.0 — 2026-11-11
 
 Per-monitor wallpapers on X11, for parity with Wayland.
