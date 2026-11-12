@@ -21,7 +21,7 @@ function __zpaper_collections
     __zpaper_query collections --json | string match -rag '"name":"((?:[^"\\\\]|\\\\.)*)"'
 end
 
-# Connected outputs from the renderer (awww/swww). Global backends report "*",
+# Connected outputs (awww/swww, or feh with xrandr). Global backends report "*",
 # which is not a valid --output value.
 function __zpaper_outputs
     __zpaper_query current --json | string match -rag '"output":"((?:[^"\\\\]|\\\\.)*)"' | path sort -u | string match -rv '^\*$'

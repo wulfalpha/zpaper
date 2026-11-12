@@ -9,8 +9,14 @@ and `#`; inline comments begin with a whitespace-separated, unquoted `#`.
 | Backend | Query actual layout | Target outputs | Scope |
 | --- | --- | --- | --- |
 | `awww`, `swww` | Yes | Yes | Per-monitor images |
-| `feh` | No | No | One image across all screens |
+| `feh` | No (recorded) | Yes, with `xrandr` | Per-monitor images; one image across all screens without `xrandr` |
 | `custom` | No | No | One image through a user command |
+
+feh cannot report what it shows, so zpaper uses what it recorded for each X11
+monitor. It names the monitors with `xrandr --listmonitors` and runs feh once per
+change with one image per monitor, in that order. Changing one monitor reruns
+feh with the others' recorded images. X11 has no wallpaper transitions, so
+`transition` only applies to awww and swww.
 
 `backend = auto` picks `awww` when installed on Wayland, otherwise `swww`; outside
 Wayland it picks `feh`. Explicit selection is available. The built-in Wayland
@@ -42,7 +48,7 @@ on_change = wal -q -i %s
 ```
 
 - `%s` is replaced with the image path and `%o` with the output name (`*` for
-  feh and custom setters). If `%s` is absent, the image is appended as the last
+  custom setters, and feh without `xrandr`). If `%s` is absent, the image is appended as the last
   argument. Quoting works like `setter`; no shell is involved, so point it at a
   script if you need pipes or several commands.
 - It runs **once per change**, even when several monitors change together, using
@@ -73,18 +79,22 @@ to turn this off.
 
 With feh on X11, zpaper cannot ask what is displayed, so the daemon watches
 `xrandr --listmonitors` instead. When monitors are added, removed, resized or
-moved, it reruns feh with the recorded image so the background covers the new
-screen layout. This needs `xrandr` (usually in the `xorg-xrandr` package); without
-it the check is skipped. `hotplug = false` turns it off too.
+moved, it reruns feh so the background covers the new screen layout: each
+monitor gets its last recorded image, and a monitor zpaper has never seen gets a
+fresh image, as on Wayland. This needs `xrandr` (usually in the `xorg-xrandr`
+package); without it the check is skipped. `hotplug = false` turns it off too.
 
 `zpaper refresh` (an alias for `restore`) reapplies the saved
 layout by hand, with or without a daemon. Like hotplug restore it is not a new
 choice: history, shuffle progress, the rotation timer, the hook and
 notifications are left alone.
 
-A layout recorded under Wayland, with an image per monitor, still restores under
-feh after switching sessions: feh shows the first of those images on every
-monitor. The same applies to `previous` and `next` through older layouts.
+X11 and Wayland usually name the same monitors differently (`HDMI-A-0` and
+`eDP` under X11, `HDMI-A-1` and `eDP-1` under niri). When you switch sessions,
+a layout recorded in the other session gives each monitor the last image recorded
+under its own name, so logging back into a session brings back that session's
+wallpapers. A monitor never seen in this session shows the layout's first image.
+The same applies to `previous` and `next` through older layouts.
 
 ## Migration and state
 

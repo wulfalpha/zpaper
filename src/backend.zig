@@ -43,6 +43,19 @@ pub const Backend = struct {
             return u.fail(self.a, "{s} did not become ready; see {s}", .{ executable, log_path });
         };
     }
+    fn fehMode(self: Backend) []const u8 {
+        return if (u.eql(self.cfg.resize, "crop")) "--bg-fill" else if (u.eql(self.cfg.resize, "fit")) "--bg-max" else if (u.eql(self.cfg.resize, "stretch")) "--bg-scale" else "--bg-center";
+    }
+    // feh sets every X11 monitor in one call: image i goes on Xinerama
+    // monitor i, the order `xrandr --listmonitors` reports.
+    pub fn applyMonitors(self: Backend, images: []const []const u8) !void {
+        std.debug.assert(self.kind == .feh);
+        for (images) |image| if (!u.exists(self.rt, image)) return u.fail(self.a, "image is missing or not a regular file: {s}", .{image});
+        var argv: std.ArrayList([]const u8) = .empty;
+        try argv.appendSlice(self.a, &.{ "feh", self.fehMode() });
+        try argv.appendSlice(self.a, images);
+        _ = try u.run(self.rt, self.a, argv.items, self.cfg.timeout);
+    }
     pub fn apply(self: Backend, image: []const u8, output: []const u8) !void {
         if (!u.exists(self.rt, image)) return u.fail(self.a, "image is missing or not a regular file: {s}", .{image});
         var argv: std.ArrayList([]const u8) = .empty;
@@ -55,8 +68,7 @@ pub const Backend = struct {
             },
             .feh => {
                 if (!u.eql(output, "*")) return error.OutputUnsupported;
-                const mode: []const u8 = if (u.eql(self.cfg.resize, "crop")) "--bg-fill" else if (u.eql(self.cfg.resize, "fit")) "--bg-max" else if (u.eql(self.cfg.resize, "stretch")) "--bg-scale" else "--bg-center";
-                try argv.appendSlice(self.a, &.{ "feh", mode, image });
+                try argv.appendSlice(self.a, &.{ "feh", self.fehMode(), image });
             },
             .custom => {
                 if (!u.eql(output, "*")) return error.OutputUnsupported;
@@ -73,7 +85,7 @@ pub const Backend = struct {
         _ = try u.run(self.rt, self.a, argv.items, self.cfg.timeout);
     }
 };
-fn available(rt: Runtime, a: u.A, name: []const u8) bool {
+pub fn available(rt: Runtime, a: u.A, name: []const u8) bool {
     var paths = std.mem.splitScalar(u8, rt.env("PATH") orelse "", ':');
     while (paths.next()) |p| {
         const candidate = std.fs.path.resolve(a, &.{ p, name }) catch return false;

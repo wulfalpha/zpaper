@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.9.0 — 2026-11-11
+
+Per-monitor wallpapers on X11, for parity with Wayland.
+
+### Added
+- feh sets a different image on each X11 monitor. zpaper names the monitors
+  with `xrandr --listmonitors` and runs feh once per change with one image per
+  monitor, in Xinerama order. `--output`, per-monitor holds, `[output.NAME]`
+  collections, `next --output`, and the `zpaper-pick` monitor step now work
+  under X11. `%o` in `on_change` is the monitor name.
+- X11 hotplug restores each monitor's own image, and a monitor zpaper has never
+  seen gets a fresh image from its collection, as on Wayland.
+- Switching between an X11 and a Wayland session restores each monitor's last
+  image recorded under its own name, so each session gets its own layout back
+  even though monitor names differ between them.
+
+### Changed
+- Without `xrandr` (or a display), feh keeps the previous behaviour of one image
+  across all screens. Custom setters remain single-image.
+- State from 0.8 with one image for every monitor upgrades on the first change.
+- Transitions remain awww/swww only; X11 has no wallpaper transitions.
+
 ## 0.8.1 — 2026-11-11
 
 Fixes from hardware testing on niri (awww) and qtile (X11, feh).

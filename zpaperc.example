@@ -31,7 +31,7 @@ timeout = 15s
 notify = false
 
 # Optional command to run after each wallpaper change, e.g. to theme your desktop
-# from the new image. %s is the image, %o the output ("*" with feh/custom); if %s
+# from the new image. %s is the image, %o the output ("*" with custom); if %s
 # is absent the image is appended. Runs in the background without a shell; its
 # output goes to ~/.local/state/zpaper/on_change.log.
 # on_change = wal -q -i %s
@@ -61,7 +61,9 @@ notify = false
 # interval = 20m
 # recursive = false
 
-# Optional per-monitor collections (awww/swww only). An assigned monitor always
+# Optional per-monitor collections (awww/swww, or feh with xrandr). Sections for
+# monitors that are not connected are ignored, so one file can name both a
+# Wayland and an X11 monitor (often HDMI-A-1 vs HDMI-A-0). An assigned monitor always
 # uses its collection and rotates on that collection's interval; other monitors
 # follow the active collection. Find output names with `zpaper current`.
 #

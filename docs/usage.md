@@ -102,8 +102,8 @@ zpaper-pick forest DP-1        # history paths containing "forest", on DP-1
 
 - With several monitors connected, it first lists each one with a preview of its
   current wallpaper, plus an "all" entry. An output given positionally, with
-  `--output`, or `--all` skips this step; so does a single monitor or a global
-  backend such as feh.
+  `--output`, or `--all` skips this step; so does a single monitor, a custom
+  setter, or feh without `xrandr`.
 - Images come from history by default. `--browse` lists the chosen monitor's
   collection (its `[output.NAME]` assignment, otherwise the active collection);
   `-C NAME` lists a named collection. A substring argument narrows the list.

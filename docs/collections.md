@@ -65,8 +65,8 @@ against the new files at the next rotation.
 
 ## Per-monitor collections
 
-With awww or swww, an `[output.NAME]` section gives a monitor its own collection.
-Find the output names with `zpaper current`.
+An `[output.NAME]` section gives a monitor its own collection. This works with
+awww, swww, and feh (with `xrandr`). Find the output names with `zpaper current`.
 
 ```ini
 [collection.portrait]
@@ -96,7 +96,15 @@ collection = portrait
   collection immediately, unless it is held. Editing the file while the daemon
   is stopped takes effect at the next rotation instead.
 - The only key is `collection`, which must name a defined collection (or
-  `default`). Output sections need a per-monitor backend (awww or swww). With
-  feh or a custom setter they are ignored, and `check` and `status` say so, so
-  one configuration can serve both a Wayland and an X11 session. Monitor names
-  often differ between the two (`HDMI-A-1` under Wayland, `HDMI-A-0` under X11).
+  `default`). Sections for monitors that are not connected are ignored, so one
+  configuration can serve both a Wayland and an X11 session. Monitor names
+  usually differ between the two, so give each name its own section:
+
+  ```ini
+  [output.HDMI-A-1]   # niri
+  collection = portrait
+  [output.HDMI-A-0]   # X11
+  collection = portrait
+  ```
+- With a custom setter, or feh without `xrandr`, there is one wallpaper for every
+  monitor; output sections are ignored, and `check` and `status` say so.

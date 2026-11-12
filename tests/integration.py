@@ -472,20 +472,36 @@ class Integration(unittest.TestCase):
         calls = [json.loads(line) for line in (self.root / 'calls').read_text().splitlines()]
         return [call for call in calls if call[0] == 'feh']
 
+    EDP = 'eDP-1=1920/344x1080/194+0+0'
+    HDMI = 'HDMI-1=2560/597x1440/336+1920+0'
+
+    def monitors(self, *entries):
+        (self.root / 'monitors').write_text(' '.join(entries))
+
     def test_feh_hotplug_reapplies_on_monitor_change(self):
         self.config(backend='feh')
-        monitors = self.root / 'monitors'
-        monitors.write_text('eDP-1=1920/344x1080/194+0+0')
+        self.monitors(self.EDP)
         self.cmd('set', self.pics[2])
         self.start()
         time.sleep(2.5)
         before = len(self.feh_calls())
-        monitors.write_text('eDP-1=1920/344x1080/194+0+0 HDMI-1=2560/597x1440/336+1920+0')
+        layouts = len(self.state()['layouts'])
+        self.monitors(self.EDP, self.HDMI)
         self.assertTrue(self.wait_for(lambda: len(self.feh_calls()) > before))
-        self.assertEqual(self.feh_calls()[-1], ['feh', '--bg-fill', self.pics[2]])
+        call = self.feh_calls()[-1]
+        self.assertEqual(call[:3], ['feh', '--bg-fill', self.pics[2]])
+        # A monitor zpaper has never seen gets a fresh image and a new layout.
+        self.assertIn(call[3], self.pics)
+        self.assertTrue(self.wait_for(lambda: len(self.state()['layouts']) == layouts + 1))
         settled = len(self.feh_calls())
         time.sleep(2.5)
         self.assertEqual(len(self.feh_calls()), settled)
+        # Unplug and replug: the known image comes back, without a new layout.
+        self.monitors(self.EDP)
+        self.assertTrue(self.wait_for(lambda: self.feh_calls()[-1] == ['feh', '--bg-fill', self.pics[2]]))
+        self.monitors(self.EDP, self.HDMI)
+        self.assertTrue(self.wait_for(lambda: self.feh_calls()[-1] == call))
+        self.assertEqual(len(self.state()['layouts']), layouts + 1)
 
     def record_per_output_then_switch_to_feh(self):
         # A layout recorded under Wayland, then a login to an X11 session.
@@ -496,16 +512,56 @@ class Integration(unittest.TestCase):
 
     def test_feh_restores_layout_recorded_per_output(self):
         first = self.record_per_output_then_switch_to_feh()
-        monitors = self.root / 'monitors'
-        monitors.write_text('eDP-1=1920/344x1080/194+0+0')
+        self.monitors(self.EDP)
         self.start()
         self.assertEqual(self.feh_calls()[-1], ['feh', '--bg-fill', first])
-        self.assertEqual(self.state()['current'], [{'output': '*', 'image': first}])
-        time.sleep(2.5)
-        before = len(self.feh_calls())
-        monitors.write_text('eDP-1=1920/344x1080/194+0+0 HDMI-1=2560/597x1440/336+1920+0')
-        self.assertTrue(self.wait_for(lambda: len(self.feh_calls()) > before))
-        self.assertEqual(self.feh_calls()[-1], ['feh', '--bg-fill', first])
+        self.assertEqual(self.state()['current'], [{'output': 'eDP-1', 'image': first}])
+
+    def test_feh_sets_each_monitor_in_xrandr_order(self):
+        self.config(backend='feh')
+        self.monitors(self.HDMI, self.EDP)
+        self.cmd('set', self.pics[0], self.pics[1])
+        self.assertEqual(self.feh_calls()[-1], ['feh', '--bg-fill', self.pics[0], self.pics[1]])
+        self.cmd('set', self.pics[2], '--output', 'eDP-1')
+        self.assertEqual(self.feh_calls()[-1], ['feh', '--bg-fill', self.pics[0], self.pics[2]])
+        current = json.loads(self.cmd('current', '--json').stdout)['outputs']
+        self.assertEqual(current, [{'output': 'HDMI-1', 'image': self.pics[0]},
+                                   {'output': 'eDP-1', 'image': self.pics[2]}])
+        self.cmd('set', self.pics[3], '--output', 'DP-9', ok=False)
+        self.cmd('previous')
+        self.assertEqual(self.feh_calls()[-1], ['feh', '--bg-fill', self.pics[0], self.pics[1]])
+
+    def test_feh_output_collections(self):
+        self.make_collections()
+        self.config(extra=self.collection_sections + '[output.HDMI-1]\ncollection = work\n', backend='feh')
+        self.monitors(self.EDP, self.HDMI)
+        self.assertNotIn('ignored', self.cmd('check').stdout)
+        self.cmd('next')
+        call = self.feh_calls()[-1]
+        self.assertIn(call[2], self.pics)
+        self.assertIn(call[3], self.work_pics)
+        self.assertIn('HDMI-1: ' + call[3] + ' [collection work]', self.cmd('status').stdout)
+
+    def test_feh_session_switch_restores_each_sessions_layout(self):
+        self.config(backend='feh')
+        self.monitors(self.EDP, self.HDMI)
+        self.cmd('set', self.pics[0], self.pics[1])
+        self.config()
+        self.cmd('set', self.pics[2], self.pics[3])
+        self.config(backend='feh')
+        self.start()
+        self.assertEqual(self.feh_calls()[-1], ['feh', '--bg-fill', self.pics[0], self.pics[1]])
+
+    def test_feh_global_state_becomes_per_monitor(self):
+        # State from 0.8 or a session without xrandr: one image for all.
+        self.config(backend='feh')
+        self.cmd('set', self.pics[0])
+        self.assertEqual(self.state()['current'], [{'output': '*', 'image': self.pics[0]}])
+        self.monitors(self.EDP, self.HDMI)
+        current = json.loads(self.cmd('current', '--json').stdout)['outputs']
+        self.assertEqual([entry['image'] for entry in current], [self.pics[0], self.pics[0]])
+        self.cmd('set', self.pics[1], '--output', 'HDMI-1')
+        self.assertEqual(self.feh_calls()[-1], ['feh', '--bg-fill', self.pics[0], self.pics[1]])
 
     def test_feh_previous_onto_layout_recorded_per_output(self):
         first = self.record_per_output_then_switch_to_feh()
@@ -608,6 +664,17 @@ class Integration(unittest.TestCase):
         self.assertEqual(monitor['rows'][0].split('\t')[2], self.pics[3])
         self.assertIn('--preview=true {3..}', monitor['args'])
         self.assertEqual([row.split('\t')[1] for row in image['rows']], [self.pics[3], self.pics[2]])
+
+    def test_pick_monitor_step_with_feh(self):
+        self.config(backend='feh')
+        self.monitors(self.EDP, self.HDMI)
+        self.cmd('set', self.pics[2])
+        self.cmd('set', self.pics[3])
+        self.pick(picks=['HDMI-1', 'c.png'])
+        self.assertEqual(self.feh_calls()[-1], ['feh', '--bg-fill', self.pics[3], self.pics[2]])
+        monitor, _ = self.fzf_calls()
+        labels = [row.split('\t')[1] for row in monitor['rows']]
+        self.assertEqual([label.split()[0] for label in labels], ['eDP-1', 'HDMI-1', 'all'])
 
     def test_pick_all_outputs(self):
         self.cmd('set', self.pics[2], self.pics[3])

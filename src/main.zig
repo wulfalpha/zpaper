@@ -6,7 +6,6 @@ const clock = @import("clock.zig");
 const config = @import("config.zig");
 const state = @import("state.zig");
 const engine = @import("engine.zig");
-const backend = @import("backend.zig");
 const platform = @import("platform.zig");
 const ipc = @import("ipc.zig");
 const Request = engine.Request;
@@ -368,8 +367,8 @@ fn run(rt: Runtime, a: u.A, argv: []const []const u8) !bool {
     if (req.action == .check) {
         const checked = try config.load(rt, a, cfg_path, true);
         try std.Io.File.stdout().writeStreamingAll(rt.io, "configuration is valid\n");
-        if (checked.outputs.len > 0 and !backend.Backend.init(rt, a, checked).queryable())
-            try std.Io.File.stdout().writeStreamingAll(rt.io, engine.Engine.outputs_ignored ++ "\n");
+        var probe = engine.Engine{ .rt = rt, .a = a, .cfg = checked, .state = .{} };
+        if (probe.outputsIgnored()) try std.Io.File.stdout().writeStreamingAll(rt.io, engine.Engine.outputs_ignored ++ "\n");
         return true;
     }
     // Only an omitted command consults the startup default. Explicit commands

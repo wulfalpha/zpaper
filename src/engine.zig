@@ -28,6 +28,9 @@ pub const Engine = struct {
     now_override: ?i64 = null,
     daemon: bool = false,
     message: std.ArrayList(u8) = .empty,
+    // X11 monitor names, looked up at most once per request.
+    x11_monitors: ?[]const []const u8 = null,
+    x11_checked: bool = false,
     fn now(self: *Engine) i64 {
         return self.now_override orelse clock.now(self.rt);
     }
@@ -112,7 +115,41 @@ pub const Engine = struct {
     // Per-monitor assignments only apply where outputs can be targeted.
     pub const outputs_ignored = "note: [output.NAME] sections are ignored; this backend sets one wallpaper for every output";
     fn assignments(self: *Engine) bool {
-        return self.cfg.outputs.len > 0 and self.be().queryable();
+        return self.cfg.outputs.len > 0 and self.perOutput();
+    }
+    pub fn outputsIgnored(self: *Engine) bool {
+        return self.cfg.outputs.len > 0 and !self.be().queryable() and self.fehMonitors() == null;
+    }
+    // Whether outputs can be targeted one by one: awww/swww, or feh with
+    // xrandr to name the X11 monitors. This runs every daemon tick, so it only
+    // looks xrandr up in PATH; without a display, feh still falls back to one
+    // wallpaper when the monitor list is needed.
+    fn perOutput(self: *Engine) bool {
+        const b = self.be();
+        return b.queryable() or (b.kind == .feh and backend.available(self.rt, self.a, "xrandr"));
+    }
+    // X11 monitor names in Xinerama order, which is the order feh assigns
+    // several images in, or null when feh cannot target monitors.
+    fn fehMonitors(self: *Engine) ?[]const []const u8 {
+        if (self.be().kind != .feh) return null;
+        if (!self.x11_checked) {
+            self.x11_checked = true;
+            const text = u.run(self.rt, self.a, &.{ "xrandr", "--listmonitors" }, self.cfg.timeout) catch {
+                u.diagnostic = "";
+                return null;
+            };
+            const lines = parseMonitors(self.a, text) catch return null;
+            self.setMonitors(lines) catch return null;
+        }
+        return self.x11_monitors;
+    }
+    fn setMonitors(self: *Engine, lines: []const []const u8) !void {
+        self.x11_checked = true;
+        self.x11_monitors = null;
+        if (lines.len == 0) return;
+        const names = try self.a.alloc([]const u8, lines.len);
+        for (lines, names) |line, *name| name.* = monitorName(line);
+        self.x11_monitors = names;
     }
     fn assigned(self: *Engine, output: []const u8) bool {
         return self.assignments() and self.cfg.assignedCollection(output) != null;
@@ -132,6 +169,22 @@ pub const Engine = struct {
     fn current(self: *Engine) ![]const Assignment {
         const b = self.be();
         if (b.queryable()) return b.query();
+        // feh cannot report what it shows; use what zpaper recorded for each
+        // X11 monitor, or the single image of an older global layout.
+        if (self.fehMonitors()) |names| {
+            var shared: []const u8 = "";
+            for (self.state.current) |entry| if (u.eql(entry.output, "*")) {
+                shared = entry.image;
+            };
+            const outputs = try self.a.alloc(Assignment, names.len);
+            for (names, outputs) |name, *out| {
+                out.* = .{ .output = name, .image = shared };
+                for (self.state.current) |entry| if (u.eql(entry.output, name)) {
+                    out.image = entry.image;
+                };
+            }
+            return outputs;
+        }
         // A global-only backend cannot assert an old Wayland output mapping.
         for (self.state.current) |entry| if (u.eql(entry.output, "*")) return self.a.dupe(Assignment, &.{entry});
         return &.{};
@@ -187,7 +240,7 @@ pub const Engine = struct {
                 if (!found) return u.fail(self.a, "output is not connected: {s}", .{name});
                 try outputs.append(self.a, name);
             }
-        } else if (self.be().queryable()) {
+        } else if (self.be().queryable() or self.fehMonitors() != null) {
             for (current_outputs) |entry| try outputs.append(self.a, entry.output);
         } else {
             try outputs.append(self.a, "*");
@@ -213,18 +266,60 @@ pub const Engine = struct {
         var failures: usize = 0;
         var changed: std.ArrayList([]const u8) = .empty;
         const b = self.be();
+        const x11 = self.fehMonitors();
+        if (x11) |names| {
+            // feh sets every monitor at once, so compose the whole screen:
+            // desired images, then what each monitor shows, then its last
+            // recorded image. A failed call changes nothing.
+            var fallback: []const u8 = "";
+            for (desired) |entry| if (entry.image.len > 0 and u.exists(self.rt, entry.image)) {
+                fallback = entry.image;
+                break;
+            };
+            if (fallback.len == 0) fallback = for (before) |entry| {
+                if (entry.image.len > 0 and u.exists(self.rt, entry.image)) break entry.image;
+            } else "";
+            const images = try self.a.alloc([]const u8, names.len);
+            for (names, images) |name, *image| {
+                image.* = "";
+                for (before) |old| if (u.eql(old.output, name) and old.image.len > 0 and u.exists(self.rt, old.image)) {
+                    image.* = old.image;
+                };
+                for (desired) |entry| if (u.eql(entry.output, name) and entry.image.len > 0 and u.exists(self.rt, entry.image)) {
+                    image.* = entry.image;
+                };
+                if (image.len == 0) image.* = self.lastImage(name) orelse fallback;
+                if (image.len == 0) return error.NoImagesFound;
+            }
+            b.applyMonitors(images) catch |err| {
+                try self.print("failed: {s}\n", .{if (u.diagnostic.len > 0) u.diagnostic else @errorName(err)});
+                u.diagnostic = "";
+                return error.LayoutIncomplete;
+            };
+            // Record images filled in for monitors that had none.
+            for (names, images) |name, image| for (after) |*old| if (u.eql(old.output, name) and old.image.len == 0) {
+                old.image = image;
+            };
+        }
         for (desired) |entry| {
             var index: ?usize = null;
             for (after, 0..) |old, i| if (u.eql(old.output, entry.output)) {
                 index = i;
                 break;
             };
-            if (entry.image.len == 0 or (b.queryable() and index == null)) {
+            if (entry.image.len == 0 or ((b.queryable() or x11 != null) and index == null)) {
                 failures += 1;
                 try self.print("skipped {s}: {s}\n", .{ entry.output, if (entry.image.len == 0) "saved output has no image" else "output is disconnected" });
                 continue;
             }
-            b.apply(entry.image, entry.output) catch |err| {
+            if (x11 != null) {
+                // Already applied above; a missing file was left out.
+                if (!u.exists(self.rt, entry.image)) {
+                    failures += 1;
+                    try self.print("failed {s}: image is missing or not a regular file: {s}\n", .{ entry.output, entry.image });
+                    continue;
+                }
+            } else b.apply(entry.image, entry.output) catch |err| {
                 failures += 1;
                 try self.print("failed {s}: {s}\n", .{ entry.output, if (u.diagnostic.len > 0) u.diagnostic else @errorName(err) });
                 u.diagnostic = "";
@@ -352,7 +447,7 @@ pub const Engine = struct {
     // added, changed, or removed) get an image from their new collection now
     // instead of at the next rotation. Held outputs keep theirs.
     pub fn reassign(self: *Engine, previous: config.Config) !void {
-        if (!self.be().queryable()) return;
+        if (!self.perOutput()) return;
         var old = self.*;
         old.cfg = previous;
         var names: std.ArrayList([]const u8) = .empty;
@@ -364,12 +459,39 @@ pub const Engine = struct {
         if (names.items.len == 0) return;
         try self.rotate(false, try std.mem.join(self.a, ",", names.items));
     }
+    // A layout for feh with named X11 monitors. Entries for connected monitors
+    // are kept, and an old global "*" image covers every monitor. A layout
+    // from another session, naming none of these monitors (Wayland calls them
+    // differently), gives each monitor its last image recorded under its own
+    // name, so switching sessions brings back that session's layout.
+    fn fitMonitors(self: *Engine, layout: []const Assignment, names: []const []const u8) ![]const Assignment {
+        var matched = false;
+        var shared: ?[]const u8 = null;
+        var first: ?[]const u8 = null;
+        for (layout) |entry| {
+            if (u.contains(names, entry.output)) matched = true;
+            if (u.eql(entry.output, "*")) shared = entry.image;
+            if (first == null and entry.image.len > 0 and u.exists(self.rt, entry.image)) first = entry.image;
+        }
+        var fitted: std.ArrayList(Assignment) = .empty;
+        for (names) |name| {
+            var image: ?[]const u8 = null;
+            for (layout) |entry| if (u.eql(entry.output, name)) {
+                image = entry.image;
+            };
+            if (image == null) image = shared;
+            if (image == null and !matched) image = self.lastImage(name) orelse first;
+            if (image) |path| try fitted.append(self.a, .{ .output = name, .image = path });
+        }
+        return fitted.toOwnedSlice(self.a);
+    }
     // A recorded layout made applicable to the current backend. Global
     // backends (feh, custom) set one wallpaper, so a per-output layout from a
     // Wayland session becomes its first existing image on "*". Per-output
     // backends already apply "*" to every output.
     fn fit(self: *Engine, layout: []const Assignment) ![]const Assignment {
         if (self.be().queryable()) return layout;
+        if (self.fehMonitors()) |names| return self.fitMonitors(layout, names);
         for (layout) |entry| if (u.eql(entry.output, "*")) return self.a.dupe(Assignment, &.{entry});
         var image: []const u8 = if (layout.len > 0) layout[0].image else return layout;
         for (layout) |entry| if (entry.image.len > 0 and u.exists(self.rt, entry.image)) {
@@ -444,30 +566,77 @@ pub const Engine = struct {
         return names.toOwnedSlice(self.a);
     }
     // feh cannot report what it shows, so watch the X11 monitor layout instead.
-    // When monitors are added, removed, resized or moved, rerun feh with the
-    // recorded image so it covers the new screen. Without xrandr this check
-    // is unsupported and the daemon skips it.
+    // When monitors are added, removed, resized or moved, rerun feh so the
+    // background covers the new screen: each monitor gets its last recorded
+    // image, and a monitor zpaper has never seen gets a fresh pick from its
+    // collection (a new layout, like on Wayland). Without xrandr this check is
+    // unsupported and the daemon skips it.
     fn reconcileX11(self: *Engine, previous: ?[]const []const u8) ![]const []const u8 {
         const text = u.run(self.rt, self.a, &.{ "xrandr", "--listmonitors" }, self.cfg.timeout) catch {
             u.diagnostic = "";
             return error.QueryUnsupported;
         };
-        const monitors = try parseMonitors(self.a, text);
-        const old = previous orelse return monitors;
-        var same_layout = old.len == monitors.len;
-        if (same_layout) for (monitors) |m| if (!u.contains(old, m)) {
+        const lines = try parseMonitors(self.a, text);
+        const old = previous orelse return lines;
+        var same_layout = old.len == lines.len;
+        if (same_layout) for (lines) |m| if (!u.contains(old, m)) {
             same_layout = false;
             break;
         };
-        if (same_layout) return monitors;
-        const image = self.lastImage("*") orelse return monitors;
-        self.be().apply(image, "*") catch |err| {
+        if (same_layout) return lines;
+        try self.setMonitors(lines);
+        const names = self.x11_monitors orelse return lines;
+        var shared: ?[]const u8 = null;
+        for (self.state.current) |entry| if (u.eql(entry.output, "*") and entry.image.len > 0 and u.exists(self.rt, entry.image)) {
+            shared = entry.image;
+        };
+        const images = try self.a.alloc([]const u8, names.len);
+        var fresh: ?[]const u8 = null;
+        var fresh_output: []const u8 = "";
+        for (names, images) |name, *image| {
+            image.* = self.lastImage(name) orelse shared orelse "";
+            if (image.len > 0) continue;
+            image.* = self.pickFrom(self.collectionFor(name)) catch |err| {
+                try self.print("new output {s}: {s}\n", .{ name, if (u.diagnostic.len > 0) u.diagnostic else @errorName(err) });
+                u.diagnostic = "";
+                continue;
+            };
+            try self.state.addImage(self.a, image.*, try std.fmt.allocPrint(self.a, "{d}", .{self.now()}));
+            try self.state.markSeen(self.a, self.collectionFor(name), image.*);
+            try self.print("new output {s}: {s}\n", .{ name, image.* });
+            if (fresh == null) {
+                fresh = image.*;
+                fresh_output = name;
+            }
+        }
+        // A monitor whose pick failed shows another monitor's image.
+        const fallback = for (images) |image| {
+            if (image.len > 0) break image;
+        } else return lines;
+        for (images) |*image| if (image.len == 0) {
+            image.* = fallback;
+        };
+        self.be().applyMonitors(images) catch |err| {
             try self.print("restore failed: {s}\n", .{if (u.diagnostic.len > 0) u.diagnostic else @errorName(err)});
             u.diagnostic = "";
-            return monitors;
+            return lines;
         };
-        try self.print("monitor layout changed; restored {s}\n", .{image});
-        return monitors;
+        try self.print("monitor layout changed; restored {d} monitor(s)\n", .{names.len});
+        // Keep entries for disconnected monitors so they come back later.
+        var recorded: std.ArrayList(Assignment) = .empty;
+        for (names, images) |name, image| try recorded.append(self.a, .{ .output = name, .image = image });
+        for (self.state.current) |entry| if (!u.eql(entry.output, "*") and !u.contains(names, entry.output)) {
+            try recorded.append(self.a, entry);
+        };
+        if (fresh) |image| {
+            try self.state.record(self.rt, self.a, recorded.items);
+            self.runHook(fresh_output, image);
+            self.dirty = true;
+        } else if (!state_mod.same(self.state.current, recorded.items)) {
+            self.state.current = recorded.items;
+            self.dirty = true;
+        }
+        return lines;
     }
     fn pickFrom(self: *Engine, name: []const u8) ![]const u8 {
         const cfg = self.cfg.effective(name) catch return u.fail(self.a, "collection '{s}' is not defined; select one with 'zpaper use NAME'", .{name});
@@ -703,7 +872,7 @@ pub const Engine = struct {
                     try self.print("daemon: {s}\nbackend: {s}\nstate: {s}\n", .{ if (self.daemon) "running" else "not running", @tagName(b.kind), if (req.action == .current and b.queryable()) "backend query" else "last recorded" });
                     try self.print("collection: {s}{s}\n", .{ self.collectionName(), if (cfg == null) " (not defined; use another collection)" else "" });
                     const schedule_info = try self.scheduleInfo();
-                    if (self.cfg.outputs.len > 0 and !b.queryable()) try self.print("{s}\n", .{outputs_ignored});
+                    if (self.outputsIgnored()) try self.print("{s}\n", .{outputs_ignored});
                     if (schedule_info.enabled) try self.print("schedule: {s}{s}\n", .{ schedule_info.current.?.collection, if (schedule_info.manual_override) " (manual choice until next change)" else if (schedule_info.pending) " (pending)" else "" });
                     for (actual) |entry| try self.print("{s}: {s}{s}\n", .{ entry.output, if (entry.image.len == 0) "(no image)" else entry.image, if (self.assigned(entry.output)) try std.fmt.allocPrint(self.a, " [collection {s}]", .{self.collectionFor(entry.output)}) else "" });
                     for (self.state.holds) |h| if (h.until == -1 or h.until > self.now()) {
@@ -859,6 +1028,11 @@ pub const Engine = struct {
 };
 // One entry per monitor from `xrandr --listmonitors`, without the index
 // column so renumbering alone is not a change: "+*eDP-1 1920/344x1080/194+0+0  eDP-1".
+// The monitor name: the last column of a parseMonitors entry.
+fn monitorName(line: []const u8) []const u8 {
+    const space = std.mem.lastIndexOfAny(u8, line, " \t") orelse return line;
+    return line[space + 1 ..];
+}
 pub fn parseMonitors(a: u.A, text: []const u8) ![]const []const u8 {
     var monitors: std.ArrayList([]const u8) = .empty;
     var lines = std.mem.splitScalar(u8, text, '\n');
@@ -877,6 +1051,8 @@ test "xrandr monitor list ignores header and index" {
     try std.testing.expectEqual(@as(usize, 2), monitors.len);
     try std.testing.expectEqualStrings("+*eDP-1 1920/344x1080/194+0+0  eDP-1", monitors[0]);
     try std.testing.expectEqualStrings("+HDMI-1 2560/597x1440/336+1920+0  HDMI-1", monitors[1]);
+    try std.testing.expectEqualStrings("eDP-1", monitorName(monitors[0]));
+    try std.testing.expectEqualStrings("HDMI-A-0", monitorName("+*HDMI-A-0 1920/597x1080/336+0+0  HDMI-A-0"));
 }
 // Single pass so a path containing "%o" is never expanded a second time.
 fn expandHook(a: u.A, arg: []const u8, image: []const u8, output: []const u8) ![]const u8 {

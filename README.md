@@ -8,8 +8,8 @@ which monitor, and keeps track of everything you've picked.
 
 - **Shuffle rotation** that goes through every image once before repeating, and
   remembers its place across restarts
-- **Per-monitor wallpapers** with awww/swww: set, rotate, or hold each output
-  on its own
+- **Per-monitor wallpapers** on Wayland (awww/swww) and X11 (feh): set, rotate,
+  or hold each output on its own
 - **History and undo**: step back and forth through up to 100 saved desktop
   layouts, or search and reapply old images
 - **Hotplug restore**: reconnected monitors and restarted renderers get their
@@ -29,8 +29,8 @@ which monitor, and keeps track of everything you've picked.
 - Linux
 - [Zig 0.16.0](https://ziglang.org/download/) to build
 - A renderer: [awww](https://codeberg.org/LGFae/awww) or
-  [swww](https://github.com/LGFae/swww) on Wayland (full per-monitor support),
-  `feh` on X11 (plus `xrandr` for hotplug restore), or any command through the `custom` backend
+  [swww](https://github.com/LGFae/swww) on Wayland, `feh` plus `xrandr` on X11
+  (both with per-monitor support), or any command through the `custom` backend
 - Optional: Python 3 and `fzf` for the [`zpaper-pick`](contrib/zpaper-pick)
   interactive picker, plus `chafa` for image previews
 
