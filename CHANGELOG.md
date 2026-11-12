@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.11.0 — 2026-11-12
 
 ### Added
 - Reproducible README animation with a static preview and CLI transcript, plus a
@@ -22,7 +22,7 @@
   state commits remain in the engine.
 
 ### Fixed
-- The README install example now selects 0.10.1 instead of 0.8.0.
+- The README install example now follows the release version instead of 0.8.0.
 
 ## 0.10.1 — 2026-11-11
 

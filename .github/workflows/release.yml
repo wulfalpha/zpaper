@@ -1,7 +1,7 @@
 name: Release
 
 # Push a tag matching the version in build.zig.zon, e.g.:
-#   git tag v0.8.0 && git push origin v0.8.0
+#   git tag vX.Y.Z && git push origin vX.Y.Z
 on:
   push:
     tags: ["v*"]

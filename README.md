@@ -48,7 +48,7 @@ the [releases page](https://github.com/wulfalpha/zpaper/releases). They need gli
 
 ```sh
 arch=$(uname -m)   # x86_64 or aarch64
-version=0.10.1
+version=0.11.0
 curl -LO "https://github.com/wulfalpha/zpaper/releases/download/v$version/zpaper-$version-$arch-linux.tar.gz"
 tar xzf "zpaper-$version-$arch-linux.tar.gz"
 install -Dm755 "zpaper-$version-$arch-linux/zpaper" ~/.local/bin/zpaper
