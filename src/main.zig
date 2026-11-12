@@ -6,6 +6,7 @@ const clock = @import("clock.zig");
 const config = @import("config.zig");
 const state = @import("state.zig");
 const engine = @import("engine.zig");
+const backend = @import("backend.zig");
 const platform = @import("platform.zig");
 const ipc = @import("ipc.zig");
 const Request = engine.Request;
@@ -274,12 +275,21 @@ fn daemonLoop(rt: Runtime, a: u.A, paths: ipc.Paths, cfg_path: []const u8, requi
                             replacement.deinit();
                             break :blk errorResponse(request_a, err);
                         };
+                        // Runs before the old configuration is freed.
+                        var e = engine.Engine{ .rt = rt, .a = request_a, .cfg = updated, .state = s, .daemon = true };
+                        e.reassign(cfg) catch |err| {
+                            e.print("reassign: {s}\n", .{if (u.diagnostic.len > 0) u.diagnostic else @errorName(err)}) catch {};
+                        };
+                        if (e.dirty) state.save(rt, request_a, paths.state, e.state) catch |err| {
+                            e.print("state save failed: {s}\n", .{@errorName(err)}) catch {};
+                        };
+                        const message = try std.fmt.allocPrint(request_a, "configuration reloaded\n{s}", .{e.message.items});
                         cfg_arena.deinit();
                         cfg_arena = replacement;
                         cfg = updated;
                         retry_at = 0;
                         schedule_retry_at = 0;
-                        break :blk .{ .ok = true, .message = "configuration reloaded\n" };
+                        break :blk .{ .ok = true, .message = message };
                     },
                     .check => break :blk .{ .ok = true, .message = "active configuration is valid\n" },
                     else => break :blk execute(rt, request_a, cfg, paths, req, true, true),
@@ -356,8 +366,10 @@ fn run(rt: Runtime, a: u.A, argv: []const []const u8) !bool {
     var req = parsed.request;
     const cfg_path = req.config_path orelse try u.absolute(rt, a, try config.getConfigPath(rt, a));
     if (req.action == .check) {
-        _ = try config.load(rt, a, cfg_path, true);
+        const checked = try config.load(rt, a, cfg_path, true);
         try std.Io.File.stdout().writeStreamingAll(rt.io, "configuration is valid\n");
+        if (checked.outputs.len > 0 and !backend.Backend.init(rt, a, checked).queryable())
+            try std.Io.File.stdout().writeStreamingAll(rt.io, engine.Engine.outputs_ignored ++ "\n");
         return true;
     }
     // Only an omitted command consults the startup default. Explicit commands

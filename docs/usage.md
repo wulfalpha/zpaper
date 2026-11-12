@@ -71,8 +71,9 @@ zpaper stop
   `resume` releases all holds; `resume --output NAME` releases that output's own
   hold but does not override a global hold. Timed holds expire within five seconds
   of their deadline if rotation is due.
-- Successful changes reset the rotation timer. Startup restores the saved layout
-  and starts a fresh interval. `interval = 0` disables automatic rotation.
+- Successful changes reset the rotation timer; `refresh` does not. Startup
+  restores the saved layout and keeps the running timer, or starts a fresh
+  interval if it ran out while the daemon was stopped. `interval = 0` disables automatic rotation.
   Omitting a command performs one `next`; configuration never implicitly forks.
 - On partial failure, successful outputs are recorded and failed outputs retain
   their previous recorded image. The command reports each failure and exits

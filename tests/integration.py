@@ -389,6 +389,36 @@ class Integration(unittest.TestCase):
         self.cmd('refresh')
         self.assertEqual(self.shown(), {'DP-1': self.pics[2], 'HDMI-A-1': self.pics[3]})
 
+    def test_refresh_is_not_a_new_choice(self):
+        self.install_hook()
+        self.config('on_change = theme-hook %s\n', interval='1h')
+        self.cmd('set', self.pics[2], self.pics[3])
+        self.assertTrue(self.wait_for(lambda: len(self.hook_calls()) == 1))
+        before = self.state()
+        time.sleep(1.1)
+        self.display.write_text(json.dumps({'DP-1': '', 'HDMI-A-1': ''}))
+        self.cmd('refresh')
+        self.assertEqual(self.shown(), {'DP-1': self.pics[2], 'HDMI-A-1': self.pics[3]})
+        after = self.state()
+        for key in ('images', 'layouts', 'cursor', 'next_due', 'seen', 'collection_progress'):
+            self.assertEqual(after.get(key), before.get(key), key)
+        time.sleep(.5)
+        self.assertEqual(len(self.hook_calls()), 1)
+
+    def test_startup_restore_restarts_overdue_timer(self):
+        self.config(interval='1h')
+        self.cmd('set', self.pics[2], self.pics[3])
+        path = self.root / 'state' / 'zpaper' / 'state.json'
+        saved = self.state()
+        saved['next_due'] = int(time.time()) - 600
+        path.write_text(json.dumps(saved))
+        self.start()
+        state = self.state()
+        self.assertGreater(state['next_due'], time.time() + 3000)
+        self.assertEqual(state['images'], saved['images'])
+        time.sleep(1)
+        self.assertEqual(self.shown(), {'DP-1': self.pics[2], 'HDMI-A-1': self.pics[3]})
+
     def test_hotplug_restores_returning_output_without_new_history(self):
         self.cmd('set', self.pics[2], self.pics[3])
         self.start()
@@ -456,6 +486,38 @@ class Integration(unittest.TestCase):
         settled = len(self.feh_calls())
         time.sleep(2.5)
         self.assertEqual(len(self.feh_calls()), settled)
+
+    def record_per_output_then_switch_to_feh(self):
+        # A layout recorded under Wayland, then a login to an X11 session.
+        self.cmd('set', self.pics[2], self.pics[3])
+        first = self.state()['current'][0]['image']
+        self.config(backend='feh')
+        return first
+
+    def test_feh_restores_layout_recorded_per_output(self):
+        first = self.record_per_output_then_switch_to_feh()
+        monitors = self.root / 'monitors'
+        monitors.write_text('eDP-1=1920/344x1080/194+0+0')
+        self.start()
+        self.assertEqual(self.feh_calls()[-1], ['feh', '--bg-fill', first])
+        self.assertEqual(self.state()['current'], [{'output': '*', 'image': first}])
+        time.sleep(2.5)
+        before = len(self.feh_calls())
+        monitors.write_text('eDP-1=1920/344x1080/194+0+0 HDMI-1=2560/597x1440/336+1920+0')
+        self.assertTrue(self.wait_for(lambda: len(self.feh_calls()) > before))
+        self.assertEqual(self.feh_calls()[-1], ['feh', '--bg-fill', first])
+
+    def test_feh_previous_onto_layout_recorded_per_output(self):
+        first = self.record_per_output_then_switch_to_feh()
+        self.cmd('set', self.pics[0])
+        layouts = len(self.state()['layouts'])
+        self.cmd('previous')
+        self.assertEqual(self.feh_calls()[-1], ['feh', '--bg-fill', first])
+        state = self.state()
+        self.assertEqual(len(state['layouts']), layouts)
+        self.assertEqual(state['cursor'], layouts - 2)
+        self.cmd('next')
+        self.assertEqual(self.feh_calls()[-1], ['feh', '--bg-fill', self.pics[0]])
 
     def test_feh_hotplug_without_xrandr_is_skipped(self):
         self.config(backend='feh')
@@ -822,6 +884,35 @@ class Integration(unittest.TestCase):
         sections = ''.join(f'[output.{output}]\ncollection = {name}\n' for output, name in assignments.items())
         self.config(extra=extra + self.collection_sections + sections, interval=interval)
 
+    def test_reload_switches_reassigned_outputs_now(self):
+        self.assign_outputs()
+        self.cmd('set', self.pics[2], self.pics[3])
+        self.start()
+        self.assign_outputs(**{'HDMI-A-1': 'work'})
+        result = self.cmd('reload').stdout
+        self.assertIn('HDMI-A-1:', result)
+        self.assertIn(self.shown()['HDMI-A-1'], self.work_pics)
+        self.assertEqual(self.shown()['DP-1'], self.pics[2])
+        # A second reload without changes leaves the wallpaper alone.
+        shown = self.shown()
+        self.cmd('reload')
+        self.assertEqual(self.shown(), shown)
+        # Removing the section returns the output to the active collection.
+        self.assign_outputs()
+        self.cmd('reload')
+        self.assertIn(self.shown()['HDMI-A-1'], self.pics)
+        self.assertEqual(self.shown()['DP-1'], self.pics[2])
+
+    def test_reload_keeps_held_output_on_reassignment(self):
+        self.assign_outputs()
+        self.cmd('set', self.pics[2], self.pics[3])
+        self.start()
+        self.cmd('hold', '--output', 'HDMI-A-1')
+        self.assign_outputs(**{'HDMI-A-1': 'work', 'DP-1': 'quiet'})
+        self.cmd('reload')
+        self.assertEqual(self.shown()['HDMI-A-1'], self.pics[3])
+        self.assertIn(self.shown()['DP-1'], self.quiet_pics)
+
     def test_output_collection_rotation_draws_per_monitor(self):
         self.assign_outputs(**{'HDMI-A-1': 'work'})
         for _ in range(4):
@@ -897,10 +988,16 @@ class Integration(unittest.TestCase):
         self.display.write_text(json.dumps(shown))
         self.assertTrue(self.wait_for(lambda: self.shown().get('DP-2') in self.work_pics), self.shown())
 
-    def test_output_sections_rejected_for_global_backend(self):
+    def test_output_sections_ignored_for_global_backend(self):
+        # One config shared by a Wayland and an X11 session.
         self.make_collections()
         self.config(extra=self.collection_sections + '[output.DP-1]\ncollection = work\n', backend='feh')
-        self.assertIn('per-monitor backend', self.cmd('check', ok=False).stderr)
+        self.assertIn('sections are ignored', self.cmd('check').stdout)
+        self.cmd('next')
+        self.assertEqual(len(self.feh_calls()), 1)
+        status = self.cmd('status').stdout
+        self.assertIn('sections are ignored', status)
+        self.assertNotIn('[collection', status)
 
     def test_schedule_startup_and_inspection(self):
         self.enable_schedule()

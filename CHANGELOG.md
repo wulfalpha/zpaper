@@ -1,8 +1,28 @@
 # Changelog
 
-## Unreleased
+## 0.8.1 — 2026-11-11
+
+Fixes from hardware testing on niri (awww) and qtile (X11, feh).
+
+### Fixed
+- Layouts recorded under Wayland, with an image per monitor, now restore under
+  feh after switching to an X11 session. Previously the daemon's startup restore
+  applied nothing, and `previous`/`next` failed on those layouts. feh shows the
+  first recorded image on every monitor, and X11 hotplug restore uses it too.
+- `refresh` (and `restore`) no longer act like a new choice: they leave image
+  history, shuffle progress and the rotation timer alone, and do not send a
+  notification or run `on_change`. The daemon's startup restore keeps a running
+  timer and starts a fresh interval only if it ran out while the daemon was
+  stopped.
 
 ### Changed
+- `[output.NAME]` sections with feh or a custom setter are ignored instead of
+  being a configuration error, so one configuration serves both a Wayland and an
+  X11 session. `check` and `status` note that they are ignored.
+- `zpaper reload` switches a monitor whose collection changed to an image from
+  its new collection immediately, instead of at its next rotation. Held monitors
+  keep their image.
+- `on_change` no longer runs for the restore at daemon startup.
 - `zpaper-pick` is now monitor-first with image previews: with several monitors
   it asks which one (or all) first, showing each monitor's current wallpaper,
   then lists images with previews via `chafa` or `kitty icat`. New options:

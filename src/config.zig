@@ -204,8 +204,6 @@ pub fn parse(rt: Runtime, a: u.A, content: []const u8) !Config {
         const target = cfg.effective(rule.collection) catch return u.fail(a, "output '{s}': collection '{s}' is not defined", .{ rule.output, rule.collection });
         if (target.dir == null and target.wallpaper == null) return u.fail(a, "output '{s}': collection '{s}' has no dir or wallpaper", .{ rule.output, rule.collection });
     }
-    if (cfg.outputs.len > 0 and (cfg.backend == .feh or cfg.backend == .custom))
-        return u.fail(a, "[output.NAME] sections need a per-monitor backend (awww or swww), not {s}", .{@tagName(cfg.backend)});
     return cfg;
 }
 fn set(rt: Runtime, a: u.A, cfg: *Config, key: []const u8, raw: []const u8) !void {
@@ -342,7 +340,10 @@ test "output sections assign collections and are validated" {
         "dir=/tmp\n[output.DP-1]\ncollection=default\ncollection=default",
         "dir=/tmp\n[output.DP-1]\ncollection=default\n[output.DP-1]\ncollection=default",
         "dir=/tmp\n[output.bad,name]\ncollection=default",
-        "dir=/tmp\nbackend=feh\n[output.DP-1]\ncollection=default",
         "[output.DP-1]\ncollection=default",
     }) |bad| try std.testing.expectError(error.CommandFailed, parse(runtime.testing(), a, bad));
+    // Global backends ignore output sections at runtime; one config can serve
+    // both a Wayland and an X11 session.
+    const feh = try parse(runtime.testing(), a, "dir=/tmp\nbackend=feh\n[output.DP-1]\ncollection=default");
+    try std.testing.expectEqual(@as(usize, 1), feh.outputs.len);
 }

@@ -91,7 +91,12 @@ collection = portrait
   collection.
 - `collections` lists each collection's assigned outputs, and `status` shows them
   next to each output along with each assigned collection's next rotation.
+- `zpaper reload` applies section changes at once: a monitor whose collection
+  changed (a section added, changed or removed) gets an image from its new
+  collection immediately, unless it is held. Editing the file while the daemon
+  is stopped takes effect at the next rotation instead.
 - The only key is `collection`, which must name a defined collection (or
-  `default`). Output sections need a per-monitor backend; with `backend = feh` or
-  `custom` they are a configuration error, and they are ignored if `auto` resolves
-  to feh.
+  `default`). Output sections need a per-monitor backend (awww or swww). With
+  feh or a custom setter they are ignored, and `check` and `status` say so, so
+  one configuration can serve both a Wayland and an X11 session. Monitor names
+  often differ between the two (`HDMI-A-1` under Wayland, `HDMI-A-0` under X11).

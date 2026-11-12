@@ -110,6 +110,7 @@ pub const Engine = struct {
         return self.cfg.selectedName(self.state.collection);
     }
     // Per-monitor assignments only apply where outputs can be targeted.
+    pub const outputs_ignored = "note: [output.NAME] sections are ignored; this backend sets one wallpaper for every output";
     fn assignments(self: *Engine) bool {
         return self.cfg.outputs.len > 0 and self.be().queryable();
     }
@@ -139,6 +140,16 @@ pub const Engine = struct {
         const cfg = try self.settings();
         self.state.next_due = if (cfg.interval == 0) 0 else self.now() + @as(i64, @intCast(cfg.interval));
         self.dirty = true;
+    }
+    // A restore at daemon startup, after time away, gives the restored images
+    // a full interval instead of an immediate rotation. Running timers, as
+    // during a refresh, are left alone.
+    fn restartOverdueTimers(self: *Engine) !void {
+        const time = self.now();
+        if (self.state.next_due != 0 and self.state.next_due <= time) try self.resetTimer();
+        for (self.state.collection_due) |entry| if (entry.due != 0 and entry.due <= time) {
+            try self.resetCollectionTimer(entry.name);
+        };
     }
     fn resetCollectionTimer(self: *Engine, name: []const u8) !void {
         const cfg = self.cfg.effective(name) catch return;
@@ -192,7 +203,10 @@ pub const Engine = struct {
     }
     // Apply individually and commit only successful assignments. We cannot make
     // multiple backend invocations atomic; the caller gets an explicit failure.
-    fn apply(self: *Engine, before: []const Assignment, desired: []const Assignment, navigation: ?usize) !void {
+    // Apply desired images. A restore reapplies what is already recorded, so
+    // it is not a new choice: history, seen lists, running timers, the hook
+    // and notifications are left alone.
+    fn apply(self: *Engine, before: []const Assignment, desired: []const Assignment, navigation: ?usize, restoring: bool) !void {
         _ = try self.settings();
         var after = try self.a.dupe(Assignment, before);
         var successes: usize = 0;
@@ -224,14 +238,22 @@ pub const Engine = struct {
                 after = try self.a.dupe(Assignment, try u.append(Assignment, self.a, after, entry));
             }
             try self.print("{s}: {s}\n", .{ entry.output, entry.image });
+            if (restoring) continue;
             const timestamp = try std.fmt.allocPrint(self.a, "{d}", .{self.now()});
             try self.state.addImage(self.a, entry.image, timestamp);
             try self.state.markSeen(self.a, self.collectionFor(entry.output), entry.image);
         }
-        if (successes > 0) {
+        if (successes > 0 and restoring) {
+            self.wallpaper_applied = true;
+            if (!state_mod.same(self.state.current, after)) {
+                self.state.current = after;
+                self.dirty = true;
+            }
+            try self.restartOverdueTimers();
+        } else if (successes > 0) {
             self.wallpaper_applied = true;
             self.state.collection = self.collectionName();
-            if (navigation != null and failures == 0 and state_mod.same(after, self.state.layouts[navigation.?].outputs)) {
+            if (navigation != null and failures == 0 and state_mod.same(after, try self.fit(self.state.layouts[navigation.?].outputs))) {
                 self.state.cursor = navigation.?;
                 self.state.current = after;
             } else {
@@ -295,7 +317,7 @@ pub const Engine = struct {
             if (paths.len > 1 and i >= paths.len) break;
             try desired.append(self.a, .{ .output = output, .image = paths[if (paths.len == 1) 0 else i] });
         }
-        try self.apply(before, desired.items, null);
+        try self.apply(before, desired.items, null, false);
     }
     pub fn rotate(self: *Engine, automatic: bool, filter: ?[]const u8) !void {
         if (automatic and self.state.held("*", self.now())) return;
@@ -316,13 +338,45 @@ pub const Engine = struct {
     // first, then the layout timeline from newest to oldest. This lets a
     // monitor that was unplugged during rotation get its own image back.
     fn lastImage(self: *Engine, output: []const u8) ?[]const u8 {
-        for (self.state.current) |entry| if (u.eql(entry.output, output) and entry.image.len > 0 and u.exists(self.rt, entry.image)) return entry.image;
+        // A global backend's "*" can use an image recorded for any output.
+        const any = !self.be().queryable() and u.eql(output, "*");
+        for (self.state.current) |entry| if ((any or u.eql(entry.output, output)) and entry.image.len > 0 and u.exists(self.rt, entry.image)) return entry.image;
         var i = self.state.layouts.len;
         while (i > 0) {
             i -= 1;
-            for (self.state.layouts[i].outputs) |entry| if (u.eql(entry.output, output) and entry.image.len > 0 and u.exists(self.rt, entry.image)) return entry.image;
+            for (self.state.layouts[i].outputs) |entry| if ((any or u.eql(entry.output, output)) and entry.image.len > 0 and u.exists(self.rt, entry.image)) return entry.image;
         }
         return null;
+    }
+    // After a reload, connected outputs whose collection changed (a section
+    // added, changed, or removed) get an image from their new collection now
+    // instead of at the next rotation. Held outputs keep theirs.
+    pub fn reassign(self: *Engine, previous: config.Config) !void {
+        if (!self.be().queryable()) return;
+        var old = self.*;
+        old.cfg = previous;
+        var names: std.ArrayList([]const u8) = .empty;
+        for (try self.current()) |entry| {
+            if (u.eql(self.collectionFor(entry.output), old.collectionFor(entry.output))) continue;
+            if (self.state.held(entry.output, self.now())) continue;
+            try names.append(self.a, entry.output);
+        }
+        if (names.items.len == 0) return;
+        try self.rotate(false, try std.mem.join(self.a, ",", names.items));
+    }
+    // A recorded layout made applicable to the current backend. Global
+    // backends (feh, custom) set one wallpaper, so a per-output layout from a
+    // Wayland session becomes its first existing image on "*". Per-output
+    // backends already apply "*" to every output.
+    fn fit(self: *Engine, layout: []const Assignment) ![]const Assignment {
+        if (self.be().queryable()) return layout;
+        for (layout) |entry| if (u.eql(entry.output, "*")) return self.a.dupe(Assignment, &.{entry});
+        var image: []const u8 = if (layout.len > 0) layout[0].image else return layout;
+        for (layout) |entry| if (entry.image.len > 0 and u.exists(self.rt, entry.image)) {
+            image = entry.image;
+            break;
+        };
+        return self.a.dupe(Assignment, &.{.{ .output = "*", .image = image }});
     }
     // Hotplug and renderer-restart recovery for queryable backends. Outputs
     // that appeared since `previous` (null on the first check) or that show no
@@ -511,12 +565,12 @@ pub const Engine = struct {
             try desired.append(self.a, .{ .output = output, .image = image });
         }
         if (desired.items.len == 0) return;
-        try self.apply(before, desired.items, null);
+        try self.apply(before, desired.items, null, false);
     }
     fn navigate(self: *Engine, index: usize) !void {
-        const desired = self.state.layouts[index].outputs;
+        const desired = try self.fit(self.state.layouts[index].outputs);
         const before = try self.prepare();
-        try self.apply(before, desired, index);
+        try self.apply(before, desired, index, false);
     }
     pub fn execute(self: *Engine, req: Request) !void {
         const arg = if (req.args.len > 0) req.args[0] else "";
@@ -595,9 +649,9 @@ pub const Engine = struct {
             },
             .restore => {
                 if (self.state.current.len == 0) return self.rotate(false, null);
-                const desired = self.state.current;
+                const desired = try self.fit(self.state.current);
                 const before = try self.prepare();
-                try self.apply(before, desired, null);
+                try self.apply(before, desired, null, true);
             },
             .hold => {
                 const seconds = if (arg.len == 0) 0 else try u.duration(arg, 60);
@@ -649,6 +703,7 @@ pub const Engine = struct {
                     try self.print("daemon: {s}\nbackend: {s}\nstate: {s}\n", .{ if (self.daemon) "running" else "not running", @tagName(b.kind), if (req.action == .current and b.queryable()) "backend query" else "last recorded" });
                     try self.print("collection: {s}{s}\n", .{ self.collectionName(), if (cfg == null) " (not defined; use another collection)" else "" });
                     const schedule_info = try self.scheduleInfo();
+                    if (self.cfg.outputs.len > 0 and !b.queryable()) try self.print("{s}\n", .{outputs_ignored});
                     if (schedule_info.enabled) try self.print("schedule: {s}{s}\n", .{ schedule_info.current.?.collection, if (schedule_info.manual_override) " (manual choice until next change)" else if (schedule_info.pending) " (pending)" else "" });
                     for (actual) |entry| try self.print("{s}: {s}{s}\n", .{ entry.output, if (entry.image.len == 0) "(no image)" else entry.image, if (self.assigned(entry.output)) try std.fmt.allocPrint(self.a, " [collection {s}]", .{self.collectionFor(entry.output)}) else "" });
                     for (self.state.holds) |h| if (h.until == -1 or h.until > self.now()) {

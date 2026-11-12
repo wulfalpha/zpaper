@@ -48,9 +48,10 @@ on_change = wal -q -i %s
 - It runs **once per change**, even when several monitors change together, using
   the first changed output in sorted name order. Use `zpaper current --json` in a
   script if you need every output.
-- Changes include rotation, manual commands, schedule switches, `refresh`, the
-  restore at daemon startup, and a fresh image for a newly connected monitor.
-  Restoring a known image after hotplug does not run it, nor does a failed change.
+- Changes include rotation, manual commands, schedule switches, a reload that
+  reassigns a monitor, and a fresh image for a newly connected monitor.
+  Reapplying recorded images does not run it: `refresh`, the restore at daemon
+  startup, and hotplug restore. Neither does a failed change.
 - The command is started in the background through `setsid`, so a slow theme
   generator never blocks zpaper. Its output and errors, including a missing
   program, are appended to `$XDG_STATE_HOME/zpaper/on_change.log`
@@ -77,7 +78,13 @@ screen layout. This needs `xrandr` (usually in the `xorg-xrandr` package); witho
 it the check is skipped. `hotplug = false` turns it off too.
 
 `zpaper refresh` (an alias for `restore`) reapplies the saved
-layout by hand, with or without a daemon.
+layout by hand, with or without a daemon. Like hotplug restore it is not a new
+choice: history, shuffle progress, the rotation timer, the hook and
+notifications are left alone.
+
+A layout recorded under Wayland, with an image per monitor, still restores under
+feh after switching sessions: feh shows the first of those images on every
+monitor. The same applies to `previous` and `next` through older layouts.
 
 ## Migration and state
 
