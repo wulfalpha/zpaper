@@ -27,7 +27,7 @@ function __zpaper_outputs
     __zpaper_query current --json | string match -rag '"output":"((?:[^"\\\\]|\\\\.)*)"' | path sort -u | string match -rv '^\*$'
 end
 
-set -l commands daemon set next previous hold resume current status history layouts search select favorite unfavorite favorites random-favorite exclude include collections use schedule list restore refresh import-legacy clear-history reload stop check
+set -l commands daemon set next previous hold resume current status history layouts search select favorite unfavorite favorites random-favorite exclude include collections use schedule list restore refresh import-legacy clear-history reload stop restart check
 set -l json_commands current status history layouts favorites list collections schedule
 set -l output_commands set next hold resume select favorite unfavorite exclude include random-favorite
 set -l image_commands set favorite unfavorite exclude include
@@ -68,6 +68,7 @@ complete -c zpaper -n "not __fish_seen_subcommand_from $commands" -a import-lega
 complete -c zpaper -n "not __fish_seen_subcommand_from $commands" -a clear-history -d 'Clear history and layouts'
 complete -c zpaper -n "not __fish_seen_subcommand_from $commands" -a reload -d 'Reload the daemon config'
 complete -c zpaper -n "not __fish_seen_subcommand_from $commands" -a stop -d 'Stop the daemon'
+complete -c zpaper -n "not __fish_seen_subcommand_from $commands" -a restart -d 'Restart the daemon'
 complete -c zpaper -n "not __fish_seen_subcommand_from $commands" -a check -d 'Validate the configuration'
 
 # Command arguments

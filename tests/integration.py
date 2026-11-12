@@ -2,6 +2,7 @@
 """Black-box tests. All backends, HOME, and XDG paths are isolated in /tmp."""
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import socket
@@ -138,8 +139,8 @@ class Integration(unittest.TestCase):
     def shown(self):
         return json.loads(self.display.read_text())
 
-    def start(self, *args):
-        self.proc = subprocess.Popen([str(BINARY), *(args or ('daemon',))], env=self.env,
+    def start(self, *args, binary=BINARY):
+        self.proc = subprocess.Popen([str(binary), *(args or ('daemon',))], env=self.env,
                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
@@ -260,6 +261,38 @@ class Integration(unittest.TestCase):
         argv = json.loads((self.root / 'custom-args.json').read_text())
         self.assertEqual(argv, ['prefix=' + self.pics[0], 'two words'])
         self.cmd('set', self.pics[1], '--output', 'DP-1', ok=False)
+
+    def test_stop_waits_so_a_new_daemon_can_start(self):
+        self.start()
+        self.assertIn('daemon stopped', self.cmd('stop').stdout)
+        self.proc.wait(timeout=2)
+        self.proc.stdout.close()
+        self.proc.stderr.close()
+        self.start()
+        self.assertIn('daemon: running (', self.cmd('status').stdout)
+
+    def test_restart_reexecs_installed_binary(self):
+        installed = self.root / 'zpaper-installed'
+        shutil.copy(BINARY, installed)
+        self.cmd('set', self.pics[2], self.pics[3])
+        self.start(binary=installed)
+        pid = self.proc.pid
+        # An upgrade replaces the file; the running daemon keeps the old one.
+        shutil.copy(BINARY, self.root / 'zpaper-new')
+        os.replace(self.root / 'zpaper-new', installed)
+        self.assertTrue(os.readlink(f'/proc/{pid}/exe').endswith('(deleted)'))
+        result = self.cmd('restart').stdout
+        self.assertIn('daemon restarting', result)
+        self.assertRegex(result, r'daemon restarted \(zpaper \d+\.\d+\.\d+\)')
+        self.assertIsNone(self.proc.poll())
+        self.assertEqual(os.readlink(f'/proc/{pid}/exe'), str(installed))
+        self.assertEqual(self.shown(), {'DP-1': self.pics[2], 'HDMI-A-1': self.pics[3]})
+
+    def test_restart_starts_daemon_when_none_is_running(self):
+        self.assertIn('daemon started (zpaper', self.cmd('restart').stdout)
+        self.assertIn('daemon: running (', self.cmd('status').stdout)
+        self.assertIn('daemon stopped', self.cmd('stop').stdout)
+        self.assertIn('not running', self.cmd('status').stdout)
 
     def test_daemon_routing_lock_stop_and_hold_persistence(self):
         self.cmd('set', self.pics[2])
@@ -518,18 +551,20 @@ class Integration(unittest.TestCase):
         self.assertEqual(self.state()['current'], [{'output': 'eDP-1', 'image': first}])
 
     def test_feh_sets_each_monitor_in_xrandr_order(self):
+        # xrandr lists eDP-1 first; names sort HDMI-1 first ("H" < "e").
         self.config(backend='feh')
-        self.monitors(self.HDMI, self.EDP)
+        self.monitors(self.EDP, self.HDMI)
         self.cmd('set', self.pics[0], self.pics[1])
-        self.assertEqual(self.feh_calls()[-1], ['feh', '--bg-fill', self.pics[0], self.pics[1]])
+        # Images map to sorted names, as on Wayland; feh gets xrandr order.
+        self.assertEqual(self.feh_calls()[-1], ['feh', '--bg-fill', self.pics[1], self.pics[0]])
         self.cmd('set', self.pics[2], '--output', 'eDP-1')
-        self.assertEqual(self.feh_calls()[-1], ['feh', '--bg-fill', self.pics[0], self.pics[2]])
+        self.assertEqual(self.feh_calls()[-1], ['feh', '--bg-fill', self.pics[2], self.pics[0]])
         current = json.loads(self.cmd('current', '--json').stdout)['outputs']
         self.assertEqual(current, [{'output': 'HDMI-1', 'image': self.pics[0]},
                                    {'output': 'eDP-1', 'image': self.pics[2]}])
         self.cmd('set', self.pics[3], '--output', 'DP-9', ok=False)
         self.cmd('previous')
-        self.assertEqual(self.feh_calls()[-1], ['feh', '--bg-fill', self.pics[0], self.pics[1]])
+        self.assertEqual(self.feh_calls()[-1], ['feh', '--bg-fill', self.pics[1], self.pics[0]])
 
     def test_feh_output_collections(self):
         self.make_collections()
@@ -550,7 +585,8 @@ class Integration(unittest.TestCase):
         self.cmd('set', self.pics[2], self.pics[3])
         self.config(backend='feh')
         self.start()
-        self.assertEqual(self.feh_calls()[-1], ['feh', '--bg-fill', self.pics[0], self.pics[1]])
+        # HDMI-1 got pics[0] (sorted first); feh gets xrandr order.
+        self.assertEqual(self.feh_calls()[-1], ['feh', '--bg-fill', self.pics[1], self.pics[0]])
 
     def test_wayland_session_switch_restores_each_sessions_layout(self):
         # niri, then qtile, then back to niri: the reverse of the test above.
@@ -690,7 +726,7 @@ class Integration(unittest.TestCase):
         self.assertEqual(self.feh_calls()[-1], ['feh', '--bg-fill', self.pics[3], self.pics[2]])
         monitor, _ = self.fzf_calls()
         labels = [row.split('\t')[1] for row in monitor['rows']]
-        self.assertEqual([label.split()[0] for label in labels], ['eDP-1', 'HDMI-1', 'all'])
+        self.assertEqual([label.split()[0] for label in labels], ['HDMI-1', 'eDP-1', 'all'])
 
     def test_pick_all_outputs(self):
         self.cmd('set', self.pics[2], self.pics[3])

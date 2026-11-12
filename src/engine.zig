@@ -9,7 +9,7 @@ const backend = @import("backend.zig");
 const state_mod = @import("state.zig");
 const picker = @import("picker.zig");
 const Assignment = state_mod.Assignment;
-pub const Action = enum { set, next, previous, hold, @"resume", current, status, history, layouts, search, select, favorite, unfavorite, favorites, random_favorite, exclude, include, list, restore, import_legacy, clear_history, collections, use, schedule, daemon, stop, reload, check };
+pub const Action = enum { set, next, previous, hold, @"resume", current, status, history, layouts, search, select, favorite, unfavorite, favorites, random_favorite, exclude, include, list, restore, import_legacy, clear_history, collections, use, schedule, daemon, stop, restart, reload, check };
 pub const Request = struct {
     action: Action = .next,
     args: []const []const u8 = &.{},
@@ -187,6 +187,14 @@ pub const Engine = struct {
                     out.image = entry.image;
                 };
             }
+            // Sorted by name like the Wayland query, so `set a b` maps images
+            // the same way in both sessions. feh itself still gets them in
+            // Xinerama order (see apply).
+            std.mem.sort(Assignment, outputs, {}, struct {
+                fn lessThan(_: void, x: Assignment, y: Assignment) bool {
+                    return std.mem.lessThan(u8, x.output, y.output);
+                }
+            }.lessThan);
             return outputs;
         }
         // A global-only backend cannot assert an old Wayland output mapping.
@@ -870,6 +878,7 @@ pub const Engine = struct {
                 if (req.json) {
                     try self.print("{s}\n", .{try std.json.Stringify.valueAlloc(self.a, .{
                         .daemon = self.daemon,
+                        .version = @import("build_options").version,
                         .backend = @tagName(b.kind),
                         .source = if (req.action == .current and b.queryable()) "backend" else "recorded",
                         .outputs = actual,
@@ -883,7 +892,7 @@ pub const Engine = struct {
                         .schedule = try self.scheduleInfo(),
                     }, .{})});
                 } else {
-                    try self.print("daemon: {s}\nbackend: {s}\nstate: {s}\n", .{ if (self.daemon) "running" else "not running", @tagName(b.kind), if (req.action == .current and b.queryable()) "backend query" else "last recorded" });
+                    try self.print("daemon: {s}\nbackend: {s}\nstate: {s}\n", .{ if (self.daemon) "running (" ++ @import("build_options").version ++ ")" else "not running", @tagName(b.kind), if (req.action == .current and b.queryable()) "backend query" else "last recorded" });
                     try self.print("collection: {s}{s}\n", .{ self.collectionName(), if (cfg == null) " (not defined; use another collection)" else "" });
                     const schedule_info = try self.scheduleInfo();
                     if (self.outputsIgnored()) |note| try self.print("{s}\n", .{note});

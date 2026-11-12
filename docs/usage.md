@@ -49,8 +49,15 @@ zpaper search forest
 zpaper select 3
 zpaper refresh                 # reapply the saved layout (alias: restore)
 zpaper reload
-zpaper stop
+zpaper stop                    # waits until the daemon has exited
+zpaper restart                 # e.g. after installing a new version
 ```
+
+- `restart` restarts the daemon in place: it shuts down cleanly and runs the
+  binary now installed at its path, keeping its environment (the session's
+  `DISPLAY`/`WAYLAND_DISPLAY`) even when run from a shell without them. It
+  prints the new daemon's version once it answers. Without a running daemon it
+  starts one in the background. `status` shows the daemon's version too.
 
 - A single image applies to every targeted output. Multiple images map to output
   names sorted alphabetically, or to the order of an explicit comma-separated

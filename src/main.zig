@@ -12,6 +12,8 @@ const Request = engine.Request;
 const version = @import("build_options").version;
 const Response = struct { ok: bool, message: []const u8 };
 var stopping = std.atomic.Value(bool).init(false);
+// Set by a `restart` request: after a clean shutdown, main() re-executes.
+var restarting = std.atomic.Value(bool).init(false);
 var force_next = std.atomic.Value(bool).init(false);
 fn signal(sig: platform.SIG) callconv(.c) void {
     if (sig == platform.SIG.USR1) force_next.store(true, .release) else stopping.store(true, .release);
@@ -38,7 +40,8 @@ const help = "zpaper " ++ version ++ " — wallpaper rotation with memory\n" ++
     \\  restore | refresh         Reapply saved layout, or choose if none saved
     \\  import-legacy [DIR]       Import script history/favorites (default ~/.cache)
     \\  clear-history             Clear image history and layout navigation
-    \\  reload | stop             Reload config / stop the daemon
+    \\  reload | stop             Reload config / stop the daemon (waits until it exits)
+    \\  restart                   Restart the daemon, picking up a newly installed binary
     \\  check                     Validate configuration without setting wallpaper
     \\
     \\--json: current, status, history, layouts, favorites, list, collections, schedule.
@@ -250,6 +253,11 @@ fn daemonLoop(rt: Runtime, a: u.A, paths: ipc.Paths, cfg_path: []const u8, requi
                         stopping.store(true, .release);
                         break :blk .{ .ok = true, .message = "daemon stopping\n" };
                     },
+                    .restart => {
+                        restarting.store(true, .release);
+                        stopping.store(true, .release);
+                        break :blk .{ .ok = true, .message = "daemon restarting\n" };
+                    },
                     .reload => {
                         var replacement = std.heap.ArenaAllocator.init(std.heap.page_allocator);
                         const updated = config.load(rt, replacement.allocator(), cfg_path, true) catch |err| {
@@ -379,12 +387,13 @@ fn run(rt: Runtime, a: u.A, argv: []const []const u8) !bool {
         try validate(req);
     };
     const paths = try ipc.paths(rt, a, try u.absolute(rt, a, try config.getDataDir(rt, a)));
-    if (try ipc.connect(rt, paths.socket)) |fd| return client(rt, a, fd, req);
+    if (try ipc.connect(rt, paths.socket)) |fd| return clientAndWait(rt, a, fd, req, paths);
+    if (req.action == .restart) return startDaemon(rt, a, paths, req.config_path);
     const owner = ipc.lock(rt, paths.lock) catch |err| {
         if (err == error.WouldBlock) {
             for (0..20) |_| {
                 try rt.sleep(100);
-                if (try ipc.connect(rt, paths.socket)) |fd| return client(rt, a, fd, req);
+                if (try ipc.connect(rt, paths.socket)) |fd| return clientAndWait(rt, a, fd, req, paths);
             }
             return u.fail(a, "another zpaper command owns the state; try again when it completes", .{});
         }
@@ -401,15 +410,89 @@ fn run(rt: Runtime, a: u.A, argv: []const []const u8) !bool {
     try emit(rt, response);
     return response.ok;
 }
+// `stop` returns once the daemon has released the owner lock, so a new daemon
+// can start right away; `restart` returns once the new daemon answers.
+fn clientAndWait(rt: Runtime, a: u.A, stream: std.Io.net.Stream, req: Request, paths: ipc.Paths) !bool {
+    if (!try client(rt, a, stream, req)) return false;
+    switch (req.action) {
+        .stop => {
+            for (0..100) |_| {
+                if (ipc.lock(rt, paths.lock)) |f| {
+                    f.close(rt.io);
+                    try std.Io.File.stdout().writeStreamingAll(rt.io, "daemon stopped\n");
+                    return true;
+                } else |err| if (err != error.WouldBlock) return err;
+                try rt.sleep(100);
+            }
+            return u.fail(a, "daemon did not stop within 10s", .{});
+        },
+        .restart => return waitForDaemon(rt, a, paths, "restarted"),
+        else => return true,
+    }
+}
+// Poll until a daemon answers `status`, then report its version.
+fn waitForDaemon(rt: Runtime, a: u.A, paths: ipc.Paths, verb: []const u8) !bool {
+    for (0..100) |_| {
+        try rt.sleep(100);
+        const stream = (try ipc.connect(rt, paths.socket)) orelse continue;
+        defer stream.close(rt.io);
+        const fd = stream.socket.handle;
+        ipc.send(rt, a, fd, Request{ .action = .status, .json = true }) catch continue;
+        const bytes = ipc.receive(rt, a, fd, 2) catch continue;
+        const response = std.json.parseFromSliceLeaky(Response, a, bytes, .{}) catch continue;
+        if (!response.ok) continue;
+        const Status = struct { version: []const u8 = "unknown" };
+        const status = std.json.parseFromSliceLeaky(Status, a, response.message, .{ .ignore_unknown_fields = true }) catch continue;
+        try std.Io.File.stdout().writeStreamingAll(rt.io, try std.fmt.allocPrint(a, "daemon {s} (zpaper {s})\n", .{ verb, status.version }));
+        return true;
+    }
+    return u.fail(a, "daemon did not answer within 10s; check `zpaper status`", .{});
+}
+// `restart` without a running daemon starts one in the background, detached
+// from this terminal, with this command's environment.
+fn startDaemon(rt: Runtime, a: u.A, paths: ipc.Paths, config_path: ?[]const u8) !bool {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    var argv: std.ArrayList([]const u8) = .empty;
+    try argv.appendSlice(a, &.{ "setsid", "-f", try selfExe(rt, &buf) });
+    if (config_path) |path| try argv.appendSlice(a, &.{ "--config", path });
+    try argv.append(a, "daemon");
+    try u.runLogged(rt, a, argv.items, 5, "/dev/null");
+    return waitForDaemon(rt, a, paths, "started");
+}
+// The binary now installed at this process's path. After an upgrade the
+// kernel reports the replaced file as "PATH (deleted)".
+fn selfExe(rt: Runtime, buf: []u8) ![]const u8 {
+    const n = try std.Io.Dir.readLinkAbsolute(rt.io, "/proc/self/exe", buf);
+    const suffix = " (deleted)";
+    return if (std.mem.endsWith(u8, buf[0..n], suffix)) buf[0 .. n - suffix.len] else buf[0..n];
+}
+// Replace this process with a fresh daemon: same arguments, environment
+// (the session's display variables), and process ID.
+fn reexec(rt: Runtime, a: u.A, args: []const [:0]const u8) void {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const argv = a.alloc([]const u8, args.len) catch return;
+    argv[0] = selfExe(rt, &buf) catch |err| {
+        std.log.err("restart: {s}", .{@errorName(err)});
+        return;
+    };
+    for (args[1..], argv[1..]) |arg, *slot| slot.* = arg;
+    const err = std.process.replace(rt.io, .{ .argv = argv });
+    std.log.err("restart: cannot execute {s}: {s}", .{ argv[0], @errorName(err) });
+}
 pub fn main(init: std.process.Init) void {
     const rt: Runtime = .{ .io = init.io, .environ = init.minimal.environ };
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    const ok = run(rt, arena.allocator(), init.minimal.args.toSlice(arena.allocator()) catch {
+    const args = init.minimal.args.toSlice(arena.allocator()) catch {
         std.process.exit(1);
-    }) catch |err| blk: {
+    };
+    const ok = run(rt, arena.allocator(), args) catch |err| blk: {
         emit(rt, errorResponse(arena.allocator(), err)) catch {};
         break :blk false;
     };
+    if (restarting.load(.acquire)) {
+        reexec(rt, arena.allocator(), args);
+        std.process.exit(1);
+    }
     arena.deinit();
     if (!ok) std.process.exit(1);
 }

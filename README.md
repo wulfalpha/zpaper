@@ -92,6 +92,7 @@ zpaper status --json
 zpaper-pick                              # pick a monitor, then an image (fzf)
 zpaper refresh                           # reapply the saved layout
 zpaper reload                            # re-read the config
+zpaper restart                           # restart the daemon (e.g. after upgrading)
 zpaper --help
 ```
 

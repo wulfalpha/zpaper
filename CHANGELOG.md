@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.9.3 — 2026-11-11
+
+### Added
+- `zpaper restart` restarts the daemon in place, picking up a newly installed
+  binary while keeping the session environment it was started with, and prints
+  the new version. Without a running daemon it starts one in the background.
+- `status` shows the daemon's version (`daemon: running (0.9.3)`, and
+  `version` in `--json`).
+- fish completion for `restart`.
+
+### Fixed
+- `zpaper stop` now waits until the daemon has exited, so starting a new one
+  straight afterwards works. Previously `zpaper stop; zpaper` could fail with
+  "another zpaper command owns the state".
+- With feh, `set a.png b.png` maps images to monitors sorted by name, as under
+  Wayland (and as documented), instead of in xrandr order.
+
 ## 0.9.2 — 2026-11-11
 
 ### Changed
