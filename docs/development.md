@@ -22,7 +22,14 @@ cursor rules. `explain.zig` formats the same policy as text or JSON.
 `engine.zig` obtains backend facts, collects and chooses images, applies plans,
 and commits successful changes to history, shuffle progress, and timers. Failed
 outputs retain their recorded images; total failures roll back tentative choices.
-The daemon and IPC lifecycle remain in `main.zig`. Policy unit tests use explicit
+`control.zig` owns the socket frontend thread, bounded request queue, and copied
+status snapshots. The daemon thread in `main.zig` owns config, timers, and all state
+writes. Per-request arenas transfer with jobs; release/acquire phase transitions
+hand responses back to the frontend. A mutex protects the queue and snapshots;
+no network or backend operations run while that mutex is held. Diagnostics are
+thread-local. Shutdown cancellation is checked by the subprocess runner and image
+scanner, and the worker finishes before the frontend frees outstanding jobs.
+Policy unit tests use explicit
 time; integration tests verify application and partial-failure behavior.
 
 ## Toolchain

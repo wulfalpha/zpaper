@@ -3,6 +3,10 @@ const std = @import("std");
 pub const Runtime = struct {
     io: std.Io,
     environ: std.process.Environ,
+    cancelled: ?*const std.atomic.Value(bool) = null,
+    pub fn checkCancelled(self: Runtime) !void {
+        if (self.cancelled) |flag| if (flag.load(.acquire)) return error.CommandCancelled;
+    }
     pub fn env(self: Runtime, name: []const u8) ?[]const u8 {
         return self.environ.getPosix(name);
     }

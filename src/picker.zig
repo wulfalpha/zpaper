@@ -31,6 +31,7 @@ fn collectDir(
 
     var iter = dir.iterate();
     while (try iter.next(rt.io)) |entry| {
+        try rt.checkCancelled();
         switch (entry.kind) {
             .file, .sym_link => {
                 if (!hasImageExtension(entry.name)) continue;

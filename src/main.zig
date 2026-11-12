@@ -10,7 +10,8 @@ const platform = @import("platform.zig");
 const ipc = @import("ipc.zig");
 const Request = engine.Request;
 const version = @import("build_options").version;
-const Response = struct { ok: bool, message: []const u8 };
+const control_mod = @import("control.zig");
+const Response = control_mod.Response;
 var stopping = std.atomic.Value(bool).init(false);
 // Set by a `restart` request: after a clean shutdown, main() re-executes.
 var restarting = std.atomic.Value(bool).init(false);
@@ -177,7 +178,35 @@ fn client(rt: Runtime, a: u.A, stream: std.Io.net.Stream, req: Request) !bool {
     try emit(rt, response);
     return response.ok;
 }
-fn daemonLoop(rt: Runtime, a: u.A, paths: ipc.Paths, cfg_path: []const u8, required: bool) !void {
+fn publishStatus(rt: Runtime, control: *control_mod.Control, cfg: config.Config, paths: ipc.Paths) void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const saved_diagnostic = u.diagnostic;
+    defer u.diagnostic = saved_diagnostic;
+    u.diagnostic = "";
+    const recorded = state.load(rt, a, paths.state) catch |err| {
+        const response = errorResponse(a, err);
+        control.publish(response, response);
+        return;
+    };
+    var text = engine.Engine{ .rt = rt, .a = a, .cfg = cfg, .state = recorded, .daemon = true, .recorded_only = true };
+    text.execute(.{ .action = .status }) catch |err| {
+        const response = errorResponse(a, err);
+        control.publish(response, response);
+        return;
+    };
+    var json = engine.Engine{ .rt = rt, .a = a, .cfg = cfg, .state = recorded, .daemon = true, .recorded_only = true };
+    json.execute(.{ .action = .status, .json = true }) catch |err| {
+        const response = errorResponse(a, err);
+        control.publish(response, response);
+        return;
+    };
+    control.publish(.{ .ok = true, .message = text.message.items }, .{ .ok = true, .message = json.message.items });
+}
+fn daemonLoop(base_rt: Runtime, a: u.A, paths: ipc.Paths, cfg_path: []const u8, required: bool) !void {
+    var rt = base_rt;
+    rt.cancelled = &stopping;
     var cfg_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer cfg_arena.deinit();
     // Preserve startup diagnostics before freeing the config arena.
@@ -185,10 +214,20 @@ fn daemonLoop(rt: Runtime, a: u.A, paths: ipc.Paths, cfg_path: []const u8, requi
     var cfg = try config.load(rt, cfg_arena.allocator(), cfg_path, required);
     var server = try ipc.listen(rt, paths.socket);
     defer server.deinit(rt.io);
-    const fd = server.socket.handle;
     defer std.Io.Dir.deleteFileAbsolute(rt.io, paths.socket) catch {};
     platform.signals(signal);
-    try std.Io.File.stderr().writeStreamingAll(rt.io, "zpaper daemon ready\n");
+    var control = control_mod.Control{
+        .rt = base_rt,
+        .server = &server,
+        .cfg_path = cfg_path,
+        .validate = validate,
+        .stopping = &stopping,
+        .restarting = &restarting,
+        .status_json = .{ .ok = true, .message = "{\"daemon\":true,\"version\":\"" ++ version ++ "\"}\n" },
+    };
+    try control.start();
+    defer control.deinit();
+    publishStatus(rt, &control, cfg, paths);
     // Reconcile the current scheduled period first, without replaying missed
     // periods. Startup restoration must not create a manual schedule override.
     {
@@ -218,6 +257,9 @@ fn daemonLoop(rt: Runtime, a: u.A, paths: ipc.Paths, cfg_path: []const u8, requi
             try state.save(rt, startup_a, paths.state, next);
         }
     }
+    publishStatus(rt, &control, cfg, paths);
+    control.starting.store(false, .release);
+    try std.Io.File.stderr().writeStreamingAll(rt.io, "zpaper daemon ready\n");
     var retry_at: i64 = 0;
     var schedule_retry_at: i64 = 0;
     var output_schedule_retry_at: i64 = 0;
@@ -227,41 +269,23 @@ fn daemonLoop(rt: Runtime, a: u.A, paths: ipc.Paths, cfg_path: []const u8, requi
     var known_outputs: ?[]const []const u8 = null;
     var hotplug_at: i64 = 0;
     var assigned_retry_at: i64 = 0;
+    var last_tick = std.Io.Timestamp.now(rt.io, .awake);
+    control.busy.store(false, .release);
     while (!stopping.load(.acquire)) {
-        var poll = [_]platform.pollfd{.{ .fd = fd, .events = platform.POLL.IN, .revents = 0 }};
-        _ = try platform.poll(&poll, 500);
-        if (poll[0].revents & platform.POLL.IN != 0) {
-            const stream = server.accept(rt.io) catch continue;
-            defer stream.close(rt.io);
-            const peer = stream.socket.handle;
-            var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-            defer {
-                u.diagnostic = "";
-                arena.deinit();
-            }
-            const request_a = arena.allocator();
+        var had_job = false;
+        if (control.take()) |job| {
+            had_job = true;
+            control.busy.store(true, .release);
+            const request_a = job.allocator();
+            const req = job.request;
             u.diagnostic = "";
-            const bytes = ipc.receive(rt, request_a, peer, 5) catch continue;
-            const req = std.json.parseFromSliceLeaky(Request, request_a, bytes, .{ .allocate = .alloc_always }) catch |err| {
-                ipc.send(rt, request_a, peer, errorResponse(request_a, err)) catch {};
-                continue;
-            };
             const response: Response = blk: {
                 validate(req) catch |err| break :blk errorResponse(request_a, err);
                 if (req.config_path) |override| {
                     if (!u.eql(override, cfg_path)) break :blk .{ .ok = false, .message = "daemon uses a different config; stop it before switching configs\n" };
                 }
                 switch (req.action) {
-                    .daemon => break :blk .{ .ok = false, .message = "daemon already running\n" },
-                    .stop => {
-                        stopping.store(true, .release);
-                        break :blk .{ .ok = true, .message = "daemon stopping\n" };
-                    },
-                    .restart => {
-                        restarting.store(true, .release);
-                        stopping.store(true, .release);
-                        break :blk .{ .ok = true, .message = "daemon restarting\n" };
-                    },
+                    .daemon, .status, .stop, .restart => unreachable, // handled by the socket frontend
                     .reload => {
                         var replacement = std.heap.ArenaAllocator.init(std.heap.page_allocator);
                         const updated = config.load(rt, replacement.allocator(), cfg_path, true) catch |err| {
@@ -307,9 +331,21 @@ fn daemonLoop(rt: Runtime, a: u.A, paths: ipc.Paths, cfg_path: []const u8, requi
                     else => break :blk execute(rt, request_a, cfg, paths, req, true, true),
                 }
             };
-            ipc.send(rt, request_a, peer, response) catch {};
+            publishStatus(rt, &control, cfg, paths);
+            u.diagnostic = "";
+            control.complete(job, response);
+            control.busy.store(false, .release);
         }
         if (stopping.load(.acquire)) break;
+        const tick_time = std.Io.Timestamp.now(rt.io, .awake);
+        if (!had_job and last_tick.durationTo(tick_time).toNanoseconds() < 500 * std.time.ns_per_ms) {
+            try rt.sleep(20);
+            continue;
+        }
+        last_tick = tick_time;
+        control.busy.store(true, .release);
+        defer control.busy.store(false, .release);
+        defer publishStatus(rt, &control, cfg, paths);
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer {
             u.diagnostic = "";

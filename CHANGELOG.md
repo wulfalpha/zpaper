@@ -3,6 +3,10 @@
 ## Unreleased
 
 ### Added
+- Responsive daemon socket handling with a bounded FIFO worker queue. `status`
+  returns the last completed snapshot with `busy`, `starting`, and `snapshot_time` fields.
+- Stop/restart and termination signals cancel in-flight renderer process groups,
+  preserving successful outputs before releasing the state lock.
 - `zpaper explain [--output NAME[,NAME]] [--json]` reports recorded wallpapers,
   effective output collections, holds, schedule overrides, and upcoming deadlines.
 - Release validation checks the README install version as well as the release tag.

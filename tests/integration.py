@@ -58,8 +58,9 @@ if args == ['query']:
 if args and args[0] == 'img':
     image = args[1]
     output = args[args.index('--outputs') + 1] if '--outputs' in args else None
-    if (root / 'slow').exists():
-        time.sleep(10)
+    if (root / 'slow').exists() and (not (root / 'slow-output').exists() or (root / 'slow-output').read_text() == output):
+        (root / 'slow-started').write_text(str(os.getpid()))
+        time.sleep(float((root / 'slow').read_text() or '10'))
     if (root / 'fail').exists() and (root / 'fail').read_text() in (output, '*'):
         print('deliberate backend failure', file=sys.stderr)
         sys.exit(7)
@@ -147,8 +148,9 @@ class Integration(unittest.TestCase):
             if self.proc.poll() is not None:
                 self.fail(self.proc.communicate())
             if list(self.runtime.glob('*/control.sock')):
-                self.cmd('status')
-                return
+                status = json.loads(self.cmd('status', '--json').stdout)
+                if not status.get('starting', False):
+                    return
             time.sleep(.03)
         self.fail('daemon did not start')
 
@@ -1563,6 +1565,158 @@ time.sleep(30)
                     os.kill(int(pidfile.read_text()), 9)
                 except ProcessLookupError:
                     pass
+
+    def responsive_daemon(self, interval='0'):
+        self.config(interval=interval, extra='hotplug = false\n')
+        self.cfg.write_text(self.cfg.read_text().replace('timeout = 1s', 'timeout = 30s'))
+        self.cmd('set', self.pics[0])
+        self.start()
+        # Wait for startup restoration before deliberately slowing the setter.
+        self.cmd('history')
+
+    def test_status_and_stop_remain_responsive_during_render(self):
+        self.responsive_daemon()
+        saved = self.state()
+        (self.root / 'slow').touch()
+        pending = subprocess.Popen([str(BINARY), 'set', self.pics[1], '--output', 'DP-1'],
+                                   env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            marker = self.root / 'slow-started'
+            self.assertTrue(self.wait_for(marker.exists))
+            child_pid = int(marker.read_text())
+            start = time.monotonic()
+            status = json.loads(self.cmd('status', '--json').stdout)
+            self.assertLess(time.monotonic() - start, 2)
+            self.assertTrue(status['busy'])
+            self.assertGreater(status['snapshot_time'], 0)
+            self.assertEqual(status['outputs'], saved['current'])
+            start = time.monotonic()
+            self.cmd('stop')
+            self.assertLess(time.monotonic() - start, 3)
+            pending.communicate(timeout=3)
+            self.assertNotEqual(pending.returncode, 0)
+            self.assertFalse(Path(f'/proc/{child_pid}').exists())
+            self.assertEqual(self.state(), saved)
+        finally:
+            if pending.poll() is None:
+                pending.kill()
+            pending.communicate()
+
+    def test_stop_commits_outputs_applied_before_cancellation(self):
+        self.responsive_daemon()
+        (self.root / 'slow').touch()
+        (self.root / 'slow-output').write_text('HDMI-A-1')
+        pending = subprocess.Popen([str(BINARY), 'set', self.pics[1]], env=self.env,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            self.assertTrue(self.wait_for((self.root / 'slow-started').exists))
+            self.cmd('stop')
+            pending.communicate(timeout=3)
+            recorded = {o['output']: o['image'] for o in self.state()['current']}
+            self.assertEqual(recorded['DP-1'], self.pics[1])
+            self.assertEqual(recorded['HDMI-A-1'], self.pics[0])
+            self.assertEqual(recorded, self.shown())
+        finally:
+            if pending.poll() is None:
+                pending.kill()
+            pending.communicate()
+
+    def test_status_and_stop_remain_responsive_during_automatic_rotation(self):
+        self.responsive_daemon(interval='1s')
+        (self.root / 'slow').touch()
+        self.assertTrue(self.wait_for((self.root / 'slow-started').exists))
+        start = time.monotonic()
+        self.assertTrue(json.loads(self.cmd('status', '--json').stdout)['busy'])
+        self.cmd('stop')
+        self.assertLess(time.monotonic() - start, 3)
+
+    def test_mutations_are_serialized_while_status_bypasses_queue(self):
+        self.responsive_daemon()
+        (self.root / 'slow').write_text('1.5')
+        first = subprocess.Popen([str(BINARY), 'set', self.pics[1], '--output', 'DP-1'],
+                                 env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        second = None
+        try:
+            self.assertTrue(self.wait_for((self.root / 'slow-started').exists))
+            second = subprocess.Popen([str(BINARY), 'set', self.pics[2], '--output', 'DP-1'],
+                                      env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            self.assertTrue(json.loads(self.cmd('status', '--json').stdout)['busy'])
+            first.communicate(timeout=5)
+            second.communicate(timeout=5)
+            self.assertEqual(first.returncode, 0)
+            self.assertEqual(second.returncode, 0)
+            self.assertEqual(self.shown()['DP-1'], self.pics[2])
+            self.assertEqual({o['output']: o['image'] for o in self.state()['current']}['DP-1'], self.pics[2])
+            images = [o['outputs'][0]['image'] for o in self.state()['layouts']]
+            self.assertLess(images.index(self.pics[1]), images.index(self.pics[2]))
+        finally:
+            for proc in (first, second):
+                if proc:
+                    if proc.poll() is None:
+                        proc.kill()
+                    proc.communicate()
+
+    def test_slow_startup_reports_starting_and_can_be_stopped(self):
+        self.config(extra='hotplug = false\n')
+        self.cfg.write_text(self.cfg.read_text().replace('timeout = 1s', 'timeout = 30s'))
+        self.cmd('set', self.pics[0])
+        (self.root / 'slow').touch()
+        self.proc = subprocess.Popen([str(BINARY), 'daemon'], env=self.env,
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.assertTrue(self.wait_for((self.root / 'slow-started').exists))
+        start = time.monotonic()
+        status = json.loads(self.cmd('status', '--json').stdout)
+        self.assertTrue(status['starting'])
+        self.assertTrue(status['busy'])
+        self.cmd('stop')
+        self.assertLess(time.monotonic() - start, 3)
+
+    def test_full_worker_queue_does_not_block_control_commands(self):
+        import select
+        self.responsive_daemon()
+        (self.root / 'slow').touch()
+        pending = subprocess.Popen([str(BINARY), 'set', self.pics[1]], env=self.env,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        peers = []
+        try:
+            self.assertTrue(self.wait_for((self.root / 'slow-started').exists))
+            path = str(next(self.runtime.glob('*/control.sock')))
+            for _ in range(18):
+                peer = socket.socket(socket.AF_UNIX)
+                peer.settimeout(3)
+                peers.append(peer)
+                peer.connect(path)
+                peer.sendall(b'{"action":"hold"}\n')
+            ready, _, _ = select.select(peers, [], [], 3)
+            self.assertTrue(ready, 'full queue did not reject excess requests')
+            data = b''
+            while b'\n' not in data:
+                data += ready[0].recv(8192)
+            response = json.loads(data)
+            self.assertFalse(response['ok'])
+            self.assertIn('queue is full', response['message'])
+            start = time.monotonic()
+            self.cmd('status')
+            self.cmd('stop')
+            self.assertLess(time.monotonic() - start, 3)
+            pending.communicate(timeout=3)
+            self.assertEqual(self.state()['holds'], [])
+        finally:
+            for peer in peers:
+                peer.close()
+            if pending.poll() is None:
+                pending.kill()
+            pending.communicate()
+
+    def test_idle_socket_does_not_block_status_or_stop(self):
+        self.start()
+        with socket.socket(socket.AF_UNIX) as idle:
+            idle.connect(str(next(self.runtime.glob('*/control.sock'))))
+            idle.sendall(b'{')
+            start = time.monotonic()
+            self.cmd('status')
+            self.cmd('stop')
+            self.assertLess(time.monotonic() - start, 2)
 
     def test_socket_fragmented_request_and_idle_timeout(self):
         self.start()

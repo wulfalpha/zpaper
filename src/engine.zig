@@ -29,6 +29,8 @@ pub const Engine = struct {
     // Injection point for deterministic scheduler/hold tests; never read from env.
     now_override: ?i64 = null,
     daemon: bool = false,
+    // Status snapshots do not probe renderer/display availability.
+    recorded_only: bool = false,
     message: std.ArrayList(u8) = .empty,
     // X11 monitor names, looked up at most once per request.
     x11_monitors: ?[]const []const u8 = null,
@@ -1021,7 +1023,7 @@ pub const Engine = struct {
                     try self.print("daemon: {s}\nbackend: {s}\nstate: {s}\n", .{ if (self.daemon) "running (" ++ @import("build_options").version ++ ")" else "not running", @tagName(b.kind), if (req.action == .current and b.queryable()) "backend query" else "last recorded" });
                     try self.print("collection: {s}{s}\n", .{ self.collectionName(), if (cfg == null) " (not defined; use another collection)" else "" });
                     const schedule_info = try self.scheduleInfo();
-                    if (self.outputsIgnored()) |note| try self.print("{s}\n", .{note});
+                    if (!self.recorded_only) if (self.outputsIgnored()) |note| try self.print("{s}\n", .{note});
                     if (schedule_info.enabled) try self.print("schedule: {s}{s}\n", .{ schedule_info.current.?.collection, if (schedule_info.manual_override) " (manual choice until next change)" else if (schedule_info.pending) " (pending)" else "" });
                     for (actual) |entry| try self.print("{s}: {s}{s}\n", .{ entry.output, if (entry.image.len == 0) "(no image)" else entry.image, try self.assignmentLabel(entry.output) });
                     for (self.state.holds) |h| if (h.until == -1 or h.until > self.now()) {

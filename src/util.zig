@@ -2,7 +2,7 @@ const std = @import("std");
 const runtime = @import("runtime.zig");
 const Runtime = runtime.Runtime;
 pub const A = std.mem.Allocator;
-pub var diagnostic: []const u8 = "";
+pub threadlocal var diagnostic: []const u8 = "";
 
 pub fn fail(a: A, comptime fmt: []const u8, args: anytype) error{ OutOfMemory, CommandFailed } {
     diagnostic = std.fmt.allocPrint(a, fmt, args) catch return error.OutOfMemory;
@@ -119,6 +119,7 @@ pub fn runLogged(rt: Runtime, a: A, argv: []const []const u8, timeout_s: u64, lo
     _ = try runWithLog(rt, a, argv, timeout_s, log_path);
 }
 fn runWithLog(rt: Runtime, a: A, argv: []const []const u8, timeout_s: u64, log_path: ?[]const u8) ![]const u8 {
+    try rt.checkCancelled();
     if (argv.len == 0) return error.EmptyCommand;
     const platform = @import("platform.zig");
     var child = platform.spawnCommand(a, rt.environ, argv, log_path) catch |err| return fail(a, "cannot execute {s}: {s}", .{ argv[0], @errorName(err) });
@@ -143,6 +144,7 @@ fn runWithLog(rt: Runtime, a: A, argv: []const []const u8, timeout_s: u64, log_p
     };
     const start = std.Io.Timestamp.now(rt.io, .awake);
     while (true) {
+        try rt.checkCancelled();
         _ = try platform.poll(&fds, 50);
         for (&fds, &outputs) |*fd, *output| {
             if (fd.fd < 0 or fd.revents == 0) continue;

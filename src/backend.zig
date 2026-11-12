@@ -25,6 +25,7 @@ pub const Backend = struct {
         return parseQuery(self.a, text, self.kind == .awww);
     }
     pub fn ready(self: Backend) !void {
+        try self.rt.checkCancelled();
         if (!self.queryable()) return;
         _ = self.query() catch |original| {
             if (!self.cfg.backend_start) return original;
@@ -35,6 +36,7 @@ pub const Backend = struct {
             u.runLogged(self.rt, self.a, &.{ "setsid", "-f", executable }, self.cfg.timeout, log_path) catch |err|
                 return u.fail(self.a, "cannot start {s}: {s}; see {s}", .{ executable, if (u.diagnostic.len > 0) u.diagnostic else @errorName(err), log_path });
             for (0..20) |_| {
+                try self.rt.checkCancelled();
                 try self.rt.sleep(100);
                 _ = self.query() catch continue;
                 u.diagnostic = "";

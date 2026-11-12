@@ -27,6 +27,30 @@ the same commands use its local Unix socket and return the result, including
 backend errors. Commands never signal an unverified PID. Only one process may
 own a given state directory, including across different runtime directories.
 
+## Responsiveness and shutdown
+
+The daemon accepts socket clients separately from its single state-changing
+worker. Wallpaper changes, reloads, and other worker requests are processed in
+FIFO order, with up to 16 waiting requests. A full queue reports an error so the
+caller can retry. Slow or incomplete socket clients do not block other clients.
+
+`status` bypasses that queue and returns the last completed recorded-state
+snapshot. JSON includes the booleans `busy` and `starting`, plus `snapshot_time`
+in Unix seconds. Text reports whether the worker is busy and when the snapshot
+was taken. Relative timer text
+is calculated at snapshot time. Snapshots do not probe renderer availability;
+`check` and `current` can inspect the backend, and `explain` uses the worker's
+current configuration and state. `starting` stays true until startup schedule
+reconciliation and restoration finish; callers that require the restored desktop
+should wait for it to be false.
+
+`stop`, `restart`, SIGTERM and SIGINT cancel an in-flight renderer command and
+kill its process group. Successfully applied outputs are recorded before shutdown;
+queued requests are discarded, and their callers see the closed connection. As
+before, a renderer can change the desktop just before cancellation without
+reporting success; `current` can inspect it afterward. `stop` waits for the owner
+lock to be released, and `restart` waits for the new daemon to answer.
+
 ## Command behaviour
 
 ```sh
