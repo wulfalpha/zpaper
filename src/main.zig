@@ -368,7 +368,7 @@ fn run(rt: Runtime, a: u.A, argv: []const []const u8) !bool {
         const checked = try config.load(rt, a, cfg_path, true);
         try std.Io.File.stdout().writeStreamingAll(rt.io, "configuration is valid\n");
         var probe = engine.Engine{ .rt = rt, .a = a, .cfg = checked, .state = .{} };
-        if (probe.outputsIgnored()) try std.Io.File.stdout().writeStreamingAll(rt.io, engine.Engine.outputs_ignored ++ "\n");
+        if (probe.outputsIgnored()) |note| try std.Io.File.stdout().writeStreamingAll(rt.io, try std.fmt.allocPrint(a, "{s}\n", .{note}));
         return true;
     }
     // Only an omitted command consults the startup default. Explicit commands

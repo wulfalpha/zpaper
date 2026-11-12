@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.2 — 2026-11-11
+
+### Changed
+- When `[output.NAME]` sections cannot apply, `check` and `status` now name the
+  reason: a custom setter, feh without `xrandr` installed, or `xrandr` unable to
+  list monitors (no X display). Previously they always said the backend sets one
+  wallpaper for every output, which was misleading for feh.
+
 ## 0.9.1 — 2026-11-11
 
 ### Fixed

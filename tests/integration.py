@@ -1081,6 +1081,17 @@ class Integration(unittest.TestCase):
         status = self.cmd('status').stdout
         self.assertIn('sections are ignored', status)
         self.assertNotIn('[collection', status)
+        # The note names the reason.
+        self.assertIn('xrandr could not list monitors', status)
+        python = self.root / 'python'
+        python.mkdir()
+        (python / 'python3').symlink_to(sys.executable)
+        (self.bin / 'xrandr').unlink()
+        self.env['PATH'] = f'{self.bin}:{python}'
+        self.assertIn('feh needs xrandr', self.cmd('check').stdout)
+        self.config(extra='setter = custom-setter %s\n' + self.collection_sections
+                    + '[output.DP-1]\ncollection = work\n', backend='custom')
+        self.assertIn('a custom setter sets one wallpaper', self.cmd('check').stdout)
 
     def test_schedule_startup_and_inspection(self):
         self.enable_schedule()

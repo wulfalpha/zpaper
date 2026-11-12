@@ -113,12 +113,16 @@ pub const Engine = struct {
         return self.cfg.selectedName(self.state.collection);
     }
     // Per-monitor assignments only apply where outputs can be targeted.
-    pub const outputs_ignored = "note: [output.NAME] sections are ignored; this backend sets one wallpaper for every output";
     fn assignments(self: *Engine) bool {
         return self.cfg.outputs.len > 0 and self.perOutput();
     }
-    pub fn outputsIgnored(self: *Engine) bool {
-        return self.cfg.outputs.len > 0 and !self.be().queryable() and self.fehMonitors() == null;
+    // Why [output.NAME] sections cannot apply right now, or null if they can.
+    pub fn outputsIgnored(self: *Engine) ?[]const u8 {
+        if (self.cfg.outputs.len == 0 or self.be().queryable() or self.fehMonitors() != null) return null;
+        const prefix = "note: [output.NAME] sections are ignored; ";
+        if (self.be().kind != .feh) return prefix ++ "a custom setter sets one wallpaper for every output";
+        if (!backend.available(self.rt, self.a, "xrandr")) return prefix ++ "feh needs xrandr (xorg-xrandr) to set each monitor";
+        return prefix ++ "xrandr could not list monitors (no X display?), so feh sets one wallpaper for every output";
     }
     // Whether outputs can be targeted one by one: awww/swww, or feh with
     // xrandr to name the X11 monitors. This runs every daemon tick, so it only
@@ -882,7 +886,7 @@ pub const Engine = struct {
                     try self.print("daemon: {s}\nbackend: {s}\nstate: {s}\n", .{ if (self.daemon) "running" else "not running", @tagName(b.kind), if (req.action == .current and b.queryable()) "backend query" else "last recorded" });
                     try self.print("collection: {s}{s}\n", .{ self.collectionName(), if (cfg == null) " (not defined; use another collection)" else "" });
                     const schedule_info = try self.scheduleInfo();
-                    if (self.outputsIgnored()) try self.print("{s}\n", .{outputs_ignored});
+                    if (self.outputsIgnored()) |note| try self.print("{s}\n", .{note});
                     if (schedule_info.enabled) try self.print("schedule: {s}{s}\n", .{ schedule_info.current.?.collection, if (schedule_info.manual_override) " (manual choice until next change)" else if (schedule_info.pending) " (pending)" else "" });
                     for (actual) |entry| try self.print("{s}: {s}{s}\n", .{ entry.output, if (entry.image.len == 0) "(no image)" else entry.image, if (self.assigned(entry.output)) try std.fmt.allocPrint(self.a, " [collection {s}]", .{self.collectionFor(entry.output)}) else "" });
                     for (self.state.holds) |h| if (h.until == -1 or h.until > self.now()) {

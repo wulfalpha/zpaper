@@ -107,4 +107,5 @@ collection = portrait
   collection = portrait
   ```
 - With a custom setter, or feh without `xrandr`, there is one wallpaper for every
-  monitor; output sections are ignored, and `check` and `status` say so.
+  monitor; output sections are ignored, and `check` and `status` say so and why
+  (a custom setter, xrandr not installed, or no X display).
