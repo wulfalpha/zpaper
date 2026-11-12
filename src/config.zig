@@ -10,13 +10,18 @@ pub const Collection = struct {
     interval: ?u64 = null,
     recursive: ?bool = null,
 };
+// An [output.NAME] section: a fixed collection, or a named schedule.
 pub const OutputRule = struct {
     output: []const u8,
     collection: []const u8 = "",
+    schedule: []const u8 = "",
 };
+// A [schedule.NAME] timetable for monitors that name it.
+pub const NamedSchedule = struct { name: []const u8, rules: []const scheduling.Rule };
 pub const Config = struct {
     daemon: bool = false,
     schedule: []const scheduling.Rule = &.{},
+    schedules: []const NamedSchedule = &.{},
     collection: ?[]const u8 = null,
     collections: []const Collection = &.{},
     outputs: []const OutputRule = &.{},
@@ -34,9 +39,12 @@ pub const Config = struct {
     timeout: u64 = 15,
     resize: []const u8 = "crop",
 
-    // The collection an [output.NAME] section assigns, if any.
-    pub fn assignedCollection(self: Config, output: []const u8) ?[]const u8 {
-        for (self.outputs) |rule| if (u.eql(rule.output, output)) return rule.collection;
+    pub fn outputRule(self: Config, output: []const u8) ?OutputRule {
+        for (self.outputs) |rule| if (u.eql(rule.output, output)) return rule;
+        return null;
+    }
+    pub fn namedSchedule(self: Config, name: []const u8) ?NamedSchedule {
+        for (self.schedules) |schedule| if (u.eql(schedule.name, name)) return schedule;
         return null;
     }
     pub fn selectedName(self: Config, saved: ?[]const u8) []const u8 {
@@ -119,6 +127,10 @@ pub fn parse(rt: Runtime, a: u.A, content: []const u8) !Config {
     var in_schedule = false;
     var had_schedule = false;
     var rules: std.ArrayList(scheduling.Rule) = .empty;
+    // Named schedules; the active one while parsing a [schedule.NAME] section.
+    const Named = struct { name: []const u8, rules: std.ArrayList(scheduling.Rule) = .empty };
+    var named: std.ArrayList(Named) = .empty;
+    var named_section: ?usize = null;
     var lines = std.mem.splitScalar(u8, content, '\n');
     var line_no: usize = 0;
     while (lines.next()) |raw| {
@@ -132,9 +144,21 @@ pub fn parse(rt: Runtime, a: u.A, content: []const u8) !Config {
                 in_schedule = true;
                 section = null;
                 output_section = null;
+                named_section = null;
                 continue;
             }
             in_schedule = false;
+            named_section = null;
+            if (std.mem.startsWith(u8, line, "[schedule.") and line[line.len - 1] == ']') {
+                const name = line[10 .. line.len - 1];
+                if (!validName(name)) return u.fail(a, "config line {d}: invalid schedule name '{s}'", .{ line_no, name });
+                for (named.items) |existing| if (u.eql(existing.name, name)) return u.fail(a, "config line {d}: duplicate schedule '{s}'", .{ line_no, name });
+                try named.append(a, .{ .name = name });
+                named_section = named.items.len - 1;
+                section = null;
+                output_section = null;
+                continue;
+            }
             if (std.mem.startsWith(u8, line, "[output.") and line[line.len - 1] == ']') {
                 const name = line[8 .. line.len - 1];
                 if (!validOutputName(name)) return u.fail(a, "config line {d}: invalid output name '{s}'", .{ line_no, name });
@@ -146,7 +170,7 @@ pub fn parse(rt: Runtime, a: u.A, content: []const u8) !Config {
             }
             output_section = null;
             if (!std.mem.startsWith(u8, line, "[collection.") or line[line.len - 1] != ']')
-                return u.fail(a, "config line {d}: expected [collection.NAME], [output.NAME] or [schedule]", .{line_no});
+                return u.fail(a, "config line {d}: expected [collection.NAME], [output.NAME], [schedule] or [schedule.NAME]", .{line_no});
             const name = line[12 .. line.len - 1];
             if (!validName(name) or u.eql(name, "default")) return u.fail(a, "config line {d}: invalid or reserved collection name '{s}'", .{ line_no, name });
             for (collections.items) |existing| if (u.eql(existing.name, name)) return u.fail(a, "config line {d}: duplicate collection '{s}'", .{ line_no, name });
@@ -159,21 +183,24 @@ pub fn parse(rt: Runtime, a: u.A, content: []const u8) !Config {
         const val = valueWithoutComment(std.mem.trim(u8, line[eq + 1 ..], " \t\r"));
         const scoped_key = if (output_section) |i|
             try std.fmt.allocPrint(a, "output.{s}.{s}", .{ outputs.items[i].output, key })
+        else if (named_section) |i|
+            try std.fmt.allocPrint(a, "schedules.{s}.{s}", .{ named.items[i].name, key })
         else
             try std.fmt.allocPrint(a, "{s}.{s}.{s}", .{ if (in_schedule) "schedule" else "collection", if (section) |i| collections.items[i].name else "default", key });
         if (seen.contains(scoped_key)) return u.fail(a, "config line {d}: duplicate key '{s}'", .{ line_no, key });
         try seen.put(scoped_key, {});
-        if (in_schedule) {
+        if (in_schedule or named_section != null) {
             const minute = scheduling.parseTime(key) catch |err| return u.fail(a, "config line {d}, schedule time '{s}': {s}", .{ line_no, key, @errorName(err) });
             const name = try scalar(a, val);
             if (!validName(name)) return u.fail(a, "config line {d}: invalid scheduled collection '{s}'", .{ line_no, name });
-            try rules.append(a, .{ .minute = minute, .collection = name });
+            try (if (named_section) |i| &named.items[i].rules else &rules).append(a, .{ .minute = minute, .collection = name });
         } else if (output_section) |i| {
             const rule = &outputs.items[i];
-            if (!u.eql(key, "collection")) return u.fail(a, "config line {d}, output '{s}': unknown key '{s}' (only 'collection' is supported)", .{ line_no, rule.output, key });
+            const is_schedule = u.eql(key, "schedule");
+            if (!is_schedule and !u.eql(key, "collection")) return u.fail(a, "config line {d}, output '{s}': unknown key '{s}' (use 'collection' or 'schedule')", .{ line_no, rule.output, key });
             const name = try scalar(a, val);
-            if (!validName(name)) return u.fail(a, "config line {d}, output '{s}': invalid collection name '{s}'", .{ line_no, rule.output, name });
-            rule.collection = name;
+            if (!validName(name)) return u.fail(a, "config line {d}, output '{s}': invalid {s} name '{s}'", .{ line_no, rule.output, key, name });
+            if (is_schedule) rule.schedule = name else rule.collection = name;
         } else if (section) |i| {
             setCollection(rt, a, &collections.items[i], key, val) catch |err| return u.fail(a, "config line {d}, collection '{s}', '{s}': {s}", .{ line_no, collections.items[i].name, key, @errorName(err) });
         } else {
@@ -188,10 +215,21 @@ pub fn parse(rt: Runtime, a: u.A, content: []const u8) !Config {
         }
     }.less);
     cfg.schedule = try rules.toOwnedSlice(a);
-    for (cfg.schedule) |rule| {
-        const target = cfg.effective(rule.collection) catch return u.fail(a, "schedule {d:0>2}:{d:0>2}: collection '{s}' is not defined", .{ rule.minute / 60, rule.minute % 60, rule.collection });
-        if (target.dir == null and target.wallpaper == null) return u.fail(a, "scheduled collection '{s}' has no dir or wallpaper", .{rule.collection});
+    try validateRules(a, cfg, "schedule", cfg.schedule);
+    var schedules: std.ArrayList(NamedSchedule) = .empty;
+    for (named.items) |*entry| {
+        std.mem.sort(scheduling.Rule, entry.rules.items, {}, struct {
+            fn less(_: void, lhs: scheduling.Rule, rhs: scheduling.Rule) bool {
+                return lhs.minute < rhs.minute;
+            }
+        }.less);
+        const label = try std.fmt.allocPrint(a, "schedule '{s}'", .{entry.name});
+        if (entry.rules.items.len == 0) return u.fail(a, "{s} has no times", .{label});
+        const owned = try entry.rules.toOwnedSlice(a);
+        try validateRules(a, cfg, label, owned);
+        try schedules.append(a, .{ .name = entry.name, .rules = owned });
     }
+    cfg.schedules = try schedules.toOwnedSlice(a);
     _ = cfg.effective(cfg.selectedName(null)) catch return u.fail(a, "default collection '{s}' is not defined", .{cfg.collection.?});
     if (cfg.setter.len > 0) {
         if (cfg.backend != .auto and cfg.backend != .custom) return u.fail(a, "setter requires backend = custom (or auto)", .{});
@@ -200,11 +238,24 @@ pub fn parse(rt: Runtime, a: u.A, content: []const u8) !Config {
     if (cfg.backend == .custom and cfg.setter.len == 0) return error.MissingSetter;
     cfg.outputs = try outputs.toOwnedSlice(a);
     for (cfg.outputs) |rule| {
-        if (rule.collection.len == 0) return u.fail(a, "output '{s}': collection is required", .{rule.output});
+        if (rule.collection.len > 0 and rule.schedule.len > 0) return u.fail(a, "output '{s}': use either collection or schedule, not both", .{rule.output});
+        if (rule.schedule.len > 0) {
+            if (cfg.namedSchedule(rule.schedule) == null) return u.fail(a, "output '{s}': schedule '{s}' is not defined; add a [schedule.{s}] section", .{ rule.output, rule.schedule, rule.schedule });
+            continue;
+        }
+        if (rule.collection.len == 0) return u.fail(a, "output '{s}': collection or schedule is required", .{rule.output});
         const target = cfg.effective(rule.collection) catch return u.fail(a, "output '{s}': collection '{s}' is not defined", .{ rule.output, rule.collection });
         if (target.dir == null and target.wallpaper == null) return u.fail(a, "output '{s}': collection '{s}' has no dir or wallpaper", .{ rule.output, rule.collection });
     }
     return cfg;
+}
+// Each scheduled collection must exist and have images. Duplicate times are
+// rejected by the duplicate-key check while parsing.
+fn validateRules(a: u.A, cfg: Config, label: []const u8, rules: []const scheduling.Rule) !void {
+    for (rules) |rule| {
+        const target = cfg.effective(rule.collection) catch return u.fail(a, "{s} {d:0>2}:{d:0>2}: collection '{s}' is not defined", .{ label, rule.minute / 60, rule.minute % 60, rule.collection });
+        if (target.dir == null and target.wallpaper == null) return u.fail(a, "scheduled collection '{s}' has no dir or wallpaper", .{rule.collection});
+    }
 }
 fn set(rt: Runtime, a: u.A, cfg: *Config, key: []const u8, raw: []const u8) !void {
     const value = if (u.eql(key, "setter") or u.eql(key, "transition") or u.eql(key, "on_change")) raw else try scalar(a, raw);
@@ -330,9 +381,9 @@ test "output sections assign collections and are validated" {
     const a = arena.allocator();
     const cfg = try parse(runtime.testing(), a, "dir=/tmp/default\n[output.DP-2]\ncollection = portrait\n[collection.portrait]\ndir=/tmp/portrait\n[output.HDMI-A-1]\ncollection=default\n");
     try std.testing.expectEqual(@as(usize, 2), cfg.outputs.len);
-    try std.testing.expectEqualStrings("portrait", cfg.assignedCollection("DP-2").?);
-    try std.testing.expectEqualStrings("default", cfg.assignedCollection("HDMI-A-1").?);
-    try std.testing.expect(cfg.assignedCollection("eDP-1") == null);
+    try std.testing.expectEqualStrings("portrait", cfg.outputRule("DP-2").?.collection);
+    try std.testing.expectEqualStrings("default", cfg.outputRule("HDMI-A-1").?.collection);
+    try std.testing.expect(cfg.outputRule("eDP-1") == null);
     for ([_][]const u8{
         "dir=/tmp\n[output.DP-1]",
         "dir=/tmp\n[output.DP-1]\ncollection=missing",
@@ -346,4 +397,26 @@ test "output sections assign collections and are validated" {
     // both a Wayland and an X11 session.
     const feh = try parse(runtime.testing(), a, "dir=/tmp\nbackend=feh\n[output.DP-1]\ncollection=default");
     try std.testing.expectEqual(@as(usize, 1), feh.outputs.len);
+}
+
+test "named schedules for outputs" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const cfg = try parse(runtime.testing(), a, "dir=/tmp/default\n[collection.night]\ndir=/tmp/night\n[schedule.external]\n20:00=night\n07:00=default\n[output.HDMI-A-0]\nschedule = external\n[output.HDMI-A-1]\nschedule = external\n[schedule]\n08:00=default\n");
+    try std.testing.expectEqual(@as(usize, 1), cfg.schedules.len);
+    try std.testing.expectEqual(@as(usize, 1), cfg.schedule.len);
+    const external = cfg.namedSchedule("external").?;
+    try std.testing.expectEqual(@as(u16, 420), external.rules[0].minute);
+    try std.testing.expectEqualStrings("night", external.rules[1].collection);
+    try std.testing.expectEqualStrings("external", cfg.outputRule("HDMI-A-1").?.schedule);
+    for ([_][]const u8{
+        "dir=/tmp\n[output.DP-1]\nschedule=missing",
+        "dir=/tmp\n[schedule.s]\n07:00=default\n[output.DP-1]\nschedule=s\ncollection=default",
+        "dir=/tmp\n[schedule.s]\n07:00=missing",
+        "dir=/tmp\n[schedule.s]",
+        "dir=/tmp\n[schedule.s]\n07:00=default\n[schedule.s]\n08:00=default",
+        "dir=/tmp\n[schedule.s]\n07:00=default\n07:00=default",
+        "dir=/tmp\n[schedule.bad,name]\n07:00=default",
+    }) |bad| try std.testing.expectError(error.CommandFailed, parse(runtime.testing(), a, bad));
 }

@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.10.0 — 2026-11-11
+
+Per-monitor schedules.
+
+### Added
+- `[schedule.NAME]` sections define named daily timetables, and an
+  `[output.NAME]` section can use one with `schedule = NAME` instead of a fixed
+  `collection`. At each scheduled time only that schedule's monitors switch, and
+  several monitors can share one timetable (useful when X11 and Wayland name the
+  same monitor differently). Works with awww, swww and feh.
+- `zpaper schedule resume --output NAME` resumes one monitor's schedule;
+  without `--output` it resumes every schedule.
+- `zpaper schedule` lists every timetable with its monitors; `status` shows
+  `[schedule NAME: COLLECTION]` next to scheduled monitors, and
+  `output_collections` in `status --json` gains a `schedule` field.
+
+### Changed
+- A manual change only overrides the schedules of the monitors it changed.
+  Changing a monitor with a fixed collection no longer marks the global
+  schedule as manually overridden.
+- State format version 5 (per-schedule progress); older state upgrades
+  automatically.
+
 ## 0.9.3 — 2026-11-11
 
 ### Added

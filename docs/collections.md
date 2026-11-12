@@ -95,8 +95,10 @@ collection = portrait
   changed (a section added, changed or removed) gets an image from its new
   collection immediately, unless it is held. Editing the file while the daemon
   is stopped takes effect at the next rotation instead.
-- The only key is `collection`, which must name a defined collection (or
-  `default`). Sections for monitors that are not connected are ignored, so one
+- A section has either `collection`, which must name a defined collection (or
+  `default`), or `schedule`, which names a `[schedule.NAME]` timetable (see
+  [Per-monitor schedules](scheduling.md#per-monitor-schedules)). Sections for
+  monitors that are not connected are ignored, so one
   configuration can serve both a Wayland and an X11 session. Monitor names
   usually differ between the two, so give each name its own section:
 

@@ -29,7 +29,7 @@ end
 
 set -l commands daemon set next previous hold resume current status history layouts search select favorite unfavorite favorites random-favorite exclude include collections use schedule list restore refresh import-legacy clear-history reload stop restart check
 set -l json_commands current status history layouts favorites list collections schedule
-set -l output_commands set next hold resume select favorite unfavorite exclude include random-favorite
+set -l output_commands set next hold resume select favorite unfavorite exclude include random-favorite schedule
 set -l image_commands set favorite unfavorite exclude include
 
 complete -c zpaper -f

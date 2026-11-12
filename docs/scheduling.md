@@ -31,7 +31,8 @@ zpaper schedule resume           # follow the current period again, respecting h
   `interval = 0` disables interval rotation, **not scheduled collection changes**.
 - Manual wallpaper commands (`use`, `set`, `next`, `previous`, `select`,
   `random-favorite`, and `restore`) suppress scheduled switching until the next
-  period. They still restart normal interval rotation; use `hold` to keep an
+  period. With [per-monitor schedules](#per-monitor-schedules), a change only
+  overrides the schedules of the monitors it changed. They still restart normal interval rotation; use `hold` to keep an
   individual wallpaper. The override survives restart. `schedule resume` ends
   it early without releasing any holds. One-shot commands do not otherwise run
   automatic scheduling; `schedule resume` can apply a period without a daemon.
@@ -58,5 +59,48 @@ avoid replay until local time catches up; `schedule resume` explicitly reevaluat
 if needed. JSON times are minutes since local midnight, and event `day` is a civil
 day index, not a UTC timestamp.
 
-This pass supports a daily timetable, without weekday/weekend rules or sunrise
+## Per-monitor schedules
+
+A `[schedule.NAME]` section is a named timetable with the same `HH:MM = collection`
+entries. An `[output.NAME]` section uses it with `schedule = NAME` instead of a
+fixed `collection`:
+
+```ini
+[schedule]                 # monitors without their own schedule
+07:00 = catppuccin
+21:00 = nsfw
+
+[schedule.external]
+07:00 = catppuccin
+18:30 = monster
+
+[output.HDMI-A-0]          # X11
+schedule = external
+[output.HDMI-A-1]          # niri: same timetable, written once
+schedule = external
+```
+
+This works with awww, swww, and feh (with `xrandr`), like per-monitor collections.
+
+- A scheduled monitor draws from whichever collection its timetable selects now,
+  rotating on that collection's interval. At each scheduled time the daemon
+  switches only that schedule's monitors; others are untouched. Several monitors
+  can share a schedule.
+- A manual change (`set`, `next`, ...) to a scheduled monitor overrides its own
+  schedule until that schedule's next change; other schedules are unaffected.
+  A manual change to a monitor without a section overrides the global
+  `[schedule]`, as before, and `use` always does.
+- `zpaper schedule resume` resumes every schedule. `zpaper schedule resume
+  --output HDMI-A-0` resumes only that monitor's schedule (or the global one for
+  a monitor without a section) and switches it to the current collection.
+- Holds work as for the global schedule: a held monitor keeps its image, and its
+  schedule's switch stays pending until it is released.
+- `zpaper schedule` lists every timetable with its monitors, current period and
+  next change; `status` shows `[schedule NAME: COLLECTION]` next to each
+  scheduled monitor.
+- The first time the daemon sees a schedule, it only records the current
+  period. Reloading a config that moves a monitor onto a schedule switches it at
+  once, like any other reassignment.
+
+Schedules support a daily timetable, without weekday/weekend rules or sunrise
 calculations.

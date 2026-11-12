@@ -69,6 +69,15 @@ notify = false
 #
 # [output.DP-2]
 # collection = quiet
+#
+# Or give a monitor its own daily timetable instead of a fixed collection:
+#
+# [schedule.external]
+# 07:00 = landscapes
+# 20:00 = quiet
+#
+# [output.HDMI-A-1]
+# schedule = external
 
 # Optional daily schedule, using the local timezone. Define the named collections
 # above before enabling this example. The most recent entry remains active until

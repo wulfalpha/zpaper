@@ -31,6 +31,8 @@ pub const Engine = struct {
     // X11 monitor names, looked up at most once per request.
     x11_monitors: ?[]const []const u8 = null,
     x11_checked: bool = false,
+    // Outputs the last successful change applied to, for manual overrides.
+    changed_outputs: []const []const u8 = &.{},
     fn now(self: *Engine) i64 {
         return self.now_override orelse clock.now(self.rt);
     }
@@ -44,7 +46,114 @@ pub const Engine = struct {
             .use, .set, .next, .previous, .select, .random_favorite, .restore => {},
             else => return,
         }
-        if (try self.scheduleWindow()) |window| self.state.schedule_cursor = scheduling.manualOverride(window, self.state.schedule_cursor);
+        // A manual change overrides the schedule of each output it changed
+        // until that schedule's next change: the global [schedule] for
+        // outputs following the active collection, or the output's own
+        // [schedule.NAME].
+        var global = !self.assignments() or action == .use or self.changed_outputs.len == 0;
+        for (self.changed_outputs) |output| {
+            const rule = self.cfg.outputRule(output) orelse {
+                global = true;
+                continue;
+            };
+            if (rule.schedule.len == 0) continue;
+            const window = (try self.namedWindow(rule.schedule)) orelse continue;
+            const previous = self.state.scheduleCursor(rule.schedule);
+            const cursor = scheduling.manualOverride(window, if (previous) |known| known.cursor else null);
+            try self.state.setScheduleCursor(self.a, .{ .name = rule.schedule, .cursor = cursor, .collection = window.current.collection });
+        }
+        if (global) if (try self.scheduleWindow()) |window| {
+            self.state.schedule_cursor = scheduling.manualOverride(window, self.state.schedule_cursor);
+        };
+    }
+    fn resumeGlobal(self: *Engine) !void {
+        // Use a clean engine so dirty from this control change does not
+        // disguise a failed wallpaper application.
+        var scheduled = self.*;
+        scheduled.state.schedule_cursor = null;
+        _ = scheduled.applySchedule() catch |err| {
+            if (scheduled.dirty) {
+                self.* = scheduled;
+            } else {
+                self.message = scheduled.message;
+            }
+            return err;
+        };
+        self.* = scheduled;
+        // Releasing a manual override persists even when held.
+        self.dirty = true;
+    }
+    // `schedule resume --output NAME`: that monitor's own schedule, or the
+    // global schedule for a monitor following the active collection.
+    fn resumeOutput(self: *Engine, output: []const u8) !void {
+        const connected = try self.current();
+        _ = try self.targets(connected, output, false);
+        const rule = (if (self.assignments()) self.cfg.outputRule(output) else null) orelse {
+            if (self.cfg.schedule.len == 0) return error.NoScheduleConfigured;
+            try self.resumeGlobal();
+            return self.print("{s} follows the global schedule again (holds still apply)\n", .{output});
+        };
+        if (rule.schedule.len == 0) return u.fail(self.a, "output {s} has a fixed collection ({s}), not a schedule", .{ output, rule.collection });
+        try self.switchScheduled(rule.schedule, (try self.namedWindow(rule.schedule)).?, connected, output);
+        try self.print("{s} follows schedule {s} again (holds still apply)\n", .{ output, rule.schedule });
+    }
+    fn namedWindow(self: *Engine, name: []const u8) !?scheduling.Window {
+        const schedule = self.cfg.namedSchedule(name) orelse return null;
+        return scheduling.evaluate(schedule.rules, try clock.localAt(self.now()));
+    }
+    fn ackSchedule(self: *Engine, name: []const u8, window: scheduling.Window, manual: bool) !void {
+        try self.state.setScheduleCursor(self.a, .{ .name = name, .cursor = scheduling.acknowledge(window, manual), .collection = window.current.collection });
+        self.dirty = true;
+    }
+    // Per-monitor schedules: at each scheduled time, switch the monitors that
+    // follow a [schedule.NAME] to its new collection. The first check of a
+    // schedule only records it (reload switches reassigned monitors), and a
+    // period with the same collection changes nothing.
+    pub fn applyOutputSchedules(self: *Engine) !void {
+        if (!self.assignments() or self.cfg.schedules.len == 0) return;
+        if (self.state.held("*", self.now())) return;
+        var connected: ?[]const Assignment = null;
+        for (self.cfg.schedules) |schedule| {
+            const window = (try self.namedWindow(schedule.name)).?;
+            const previous = self.state.scheduleCursor(schedule.name) orelse {
+                try self.ackSchedule(schedule.name, window, false);
+                continue;
+            };
+            if (!scheduling.due(window, previous.cursor)) continue;
+            if (u.eql(previous.collection, window.current.collection)) {
+                try self.ackSchedule(schedule.name, window, false);
+                continue;
+            }
+            if (connected == null) connected = try self.current();
+            try self.switchScheduled(schedule.name, window, connected.?, null);
+        }
+    }
+    // Rotate a schedule's connected monitors (or just `only`) to its current
+    // collection and record the period. Held monitors keep their image and
+    // leave the switch pending; with no monitor connected there is nothing to
+    // change, since a monitor that connects later picks from the current
+    // collection anyway.
+    fn switchScheduled(self: *Engine, name: []const u8, window: scheduling.Window, connected: []const Assignment, only: ?[]const u8) !void {
+        var filter: std.ArrayList(u8) = .empty;
+        var found = false;
+        for (connected) |entry| {
+            const rule = self.cfg.outputRule(entry.output) orelse continue;
+            if (!u.eql(rule.schedule, name)) continue;
+            if (only) |output| if (!u.eql(output, entry.output)) continue;
+            found = true;
+            if (self.state.held(entry.output, self.now())) continue;
+            if (filter.items.len > 0) try filter.append(self.a, ',');
+            try filter.appendSlice(self.a, entry.output);
+        }
+        if (!found) return self.ackSchedule(name, window, false);
+        if (filter.items.len == 0) return;
+        const was_dirty = self.dirty;
+        self.dirty = false;
+        defer self.dirty = self.dirty or was_dirty;
+        try self.rotateAssigned(true, filter.items, false);
+        if (!self.dirty) return;
+        try self.ackSchedule(name, window, false);
+        try self.print("schedule {s}: {d:0>2}:{d:0>2} -> {s} ({s})\n", .{ name, window.current.minute / 60, window.current.minute % 60, window.current.collection, filter.items });
     }
     // Returns true while a schedule change takes precedence over interval
     // rotation (including a deferred change while all target outputs are held).
@@ -90,21 +199,57 @@ pub const Engine = struct {
         const pending = scheduling.due(window, self.state.schedule_cursor);
         return .{ .enabled = true, .current = window.current, .next = scheduling.nextChange(self.cfg.schedule, window, self.state.schedule_cursor), .manual_override = if (self.state.schedule_cursor) |cursor| cursor.manual and !pending else false, .held = self.state.held("*", self.now()), .pending = pending };
     }
+    fn namedScheduleInfo(self: *Engine, schedule: config.NamedSchedule) !ScheduleInfo {
+        const window = (try self.namedWindow(schedule.name)).?;
+        const previous = self.state.scheduleCursor(schedule.name);
+        const cursor = if (previous) |known| known.cursor else null;
+        const pending = if (previous) |known| scheduling.due(window, cursor) and !u.eql(known.collection, window.current.collection) else false;
+        var held = self.state.held("*", self.now());
+        if (!held) {
+            var any = false;
+            held = true;
+            for (self.cfg.outputs) |rule| if (u.eql(rule.schedule, schedule.name)) {
+                any = true;
+                if (!self.state.held(rule.output, self.now())) held = false;
+            };
+            held = held and any;
+        }
+        return .{ .enabled = true, .current = window.current, .next = scheduling.nextChange(schedule.rules, window, cursor), .manual_override = if (cursor) |c| c.manual and !pending else false, .held = held, .pending = pending };
+    }
+    fn scheduleOutputs(self: *Engine, name: []const u8) ![]const []const u8 {
+        var outputs: std.ArrayList([]const u8) = .empty;
+        for (self.cfg.outputs) |rule| if (u.eql(rule.schedule, name)) {
+            try outputs.append(self.a, rule.output);
+        };
+        return outputs.toOwnedSlice(self.a);
+    }
     fn showSchedule(self: *Engine, json: bool) !void {
         const info = try self.scheduleInfo();
         if (json) {
-            try self.print("{s}\n", .{try std.json.Stringify.valueAlloc(self.a, .{ .status = info, .rules = self.cfg.schedule }, .{})});
+            const Named = struct { name: []const u8, outputs: []const []const u8, rules: []const scheduling.Rule, status: ScheduleInfo };
+            var named: std.ArrayList(Named) = .empty;
+            for (self.cfg.schedules) |schedule| try named.append(self.a, .{ .name = schedule.name, .outputs = try self.scheduleOutputs(schedule.name), .rules = schedule.rules, .status = try self.namedScheduleInfo(schedule) });
+            try self.print("{s}\n", .{try std.json.Stringify.valueAlloc(self.a, .{ .status = info, .rules = self.cfg.schedule, .schedules = named.items }, .{})});
             return;
         }
         if (!info.enabled) {
             try self.print("schedule: not configured\n", .{});
-            return;
+        } else {
+            try self.print("schedule: local time{s}{s}\n", .{ if (info.manual_override) "; manual choice until next scheduled change" else "", if (info.held) "; held" else "" });
+            try self.printTimetable(self.cfg.schedule, info);
         }
-        try self.print("schedule: local time{s}{s}\n", .{ if (info.manual_override) "; manual choice until next scheduled change" else "", if (info.held) "; held" else "" });
-        for (self.cfg.schedule) |rule| try self.print("  {d:0>2}:{d:0>2} -> {s}\n", .{ rule.minute / 60, rule.minute % 60, rule.collection });
+        for (self.cfg.schedules) |schedule| {
+            const named = try self.namedScheduleInfo(schedule);
+            const outputs = try self.scheduleOutputs(schedule.name);
+            try self.print("schedule {s} ({s}): local time{s}{s}\n", .{ schedule.name, if (outputs.len == 0) "no outputs" else try std.mem.join(self.a, ", ", outputs), if (named.manual_override) "; manual choice until next scheduled change" else "", if (named.held) "; held" else "" });
+            try self.printTimetable(schedule.rules, named);
+        }
+    }
+    fn printTimetable(self: *Engine, rules: []const scheduling.Rule, info: ScheduleInfo) !void {
+        for (rules) |rule| try self.print("  {d:0>2}:{d:0>2} -> {s}\n", .{ rule.minute / 60, rule.minute % 60, rule.collection });
         const next = info.next.?;
         const local = try clock.localAt(self.now());
-        try self.print("current period: {s}; next: {d:0>2}:{d:0>2} {s} -> {s}\n", .{ info.current.?.collection, next.minute / 60, next.minute % 60, if (next.day == local.day) "today" else if (next.day == local.day + 1) "tomorrow" else try std.fmt.allocPrint(self.a, "in {d} days", .{next.day - local.day}), next.collection });
+        try self.print("  current period: {s}{s}; next: {d:0>2}:{d:0>2} {s} -> {s}\n", .{ info.current.?.collection, if (info.pending) " (pending)" else "", next.minute / 60, next.minute % 60, if (next.day == local.day) "today" else if (next.day == local.day + 1) "tomorrow" else try std.fmt.allocPrint(self.a, "in {d} days", .{next.day - local.day}), next.collection });
     }
     pub fn print(self: *Engine, comptime fmt: []const u8, args: anytype) !void {
         try self.message.appendSlice(self.a, try std.fmt.allocPrint(self.a, fmt, args));
@@ -117,6 +262,20 @@ pub const Engine = struct {
         return self.cfg.outputs.len > 0 and self.perOutput();
     }
     // Why [output.NAME] sections cannot apply right now, or null if they can.
+    // [output.NAME] assignments with the collection each uses now.
+    const OutputCollection = struct { output: []const u8, collection: []const u8, schedule: ?[]const u8 = null };
+    fn outputCollections(self: *Engine) ![]const OutputCollection {
+        if (!self.assignments()) return &.{};
+        var list: std.ArrayList(OutputCollection) = .empty;
+        for (self.cfg.outputs) |rule| try list.append(self.a, .{ .output = rule.output, .collection = self.assignedCollection(rule.output) orelse "", .schedule = if (rule.schedule.len > 0) rule.schedule else null });
+        return list.toOwnedSlice(self.a);
+    }
+    fn assignmentLabel(self: *Engine, output: []const u8) ![]const u8 {
+        if (!self.assigned(output)) return "";
+        const rule = self.cfg.outputRule(output).?;
+        if (rule.schedule.len > 0) return std.fmt.allocPrint(self.a, " [schedule {s}: {s}]", .{ rule.schedule, self.collectionFor(output) });
+        return std.fmt.allocPrint(self.a, " [collection {s}]", .{self.collectionFor(output)});
+    }
     pub fn outputsIgnored(self: *Engine) ?[]const u8 {
         if (self.cfg.outputs.len == 0 or self.be().queryable() or self.fehMonitors() != null) return null;
         const prefix = "note: [output.NAME] sections are ignored; ";
@@ -155,13 +314,22 @@ pub const Engine = struct {
         for (lines, names) |line, *name| name.* = monitorName(line);
         self.x11_monitors = names;
     }
+    // The collection an [output.NAME] section gives a monitor: its fixed
+    // collection, or what its [schedule.NAME] selects right now.
+    fn assignedCollection(self: *Engine, output: []const u8) ?[]const u8 {
+        const rule = self.cfg.outputRule(output) orelse return null;
+        if (rule.collection.len > 0) return rule.collection;
+        const schedule = self.cfg.namedSchedule(rule.schedule) orelse return null;
+        const local = clock.localAt(self.now()) catch return schedule.rules[0].collection;
+        return scheduling.evaluate(schedule.rules, local).?.current.collection;
+    }
     fn assigned(self: *Engine, output: []const u8) bool {
-        return self.assignments() and self.cfg.assignedCollection(output) != null;
+        return self.assignments() and self.cfg.outputRule(output) != null;
     }
     // The collection an output draws from: its [output.NAME] assignment, or
     // the active collection that `use` and the schedule control.
     fn collectionFor(self: *Engine, output: []const u8) []const u8 {
-        if (self.assignments()) if (self.cfg.assignedCollection(output)) |name| return name;
+        if (self.assignments()) if (self.assignedCollection(output)) |name| return name;
         return self.collectionName();
     }
     fn settings(self: *Engine) !config.Config {
@@ -368,6 +536,7 @@ pub const Engine = struct {
                 try self.state.record(self.rt, self.a, after);
             }
             try self.resetTimers(changed.items);
+            self.changed_outputs = changed.items;
             for (desired) |entry| if (outputChanged(after, entry)) {
                 self.runHook(entry.output, entry.image);
                 break;
@@ -470,6 +639,10 @@ pub const Engine = struct {
         }
         if (names.items.len == 0) return;
         try self.rotate(false, try std.mem.join(self.a, ",", names.items));
+        // Reassigned monitors are on their schedules' current collections.
+        for (names.items) |output| if (self.cfg.outputRule(output)) |rule| if (rule.schedule.len > 0) {
+            if (try self.namedWindow(rule.schedule)) |window| try self.ackSchedule(rule.schedule, window, false);
+        };
     }
     // A layout for these monitor names. Entries for connected monitors are
     // kept, and an old global "*" image covers every monitor. A layout from
@@ -681,33 +854,33 @@ pub const Engine = struct {
         if (!self.assignments() or self.state.held("*", self.now())) return false;
         var stalled = false;
         var connected: ?[]const Assignment = null;
-        for (self.cfg.outputs, 0..) |rule, i| {
-            var duplicate = false;
-            for (self.cfg.outputs[0..i]) |earlier| if (u.eql(earlier.collection, rule.collection)) {
-                duplicate = true;
-            };
-            if (duplicate) continue;
-            const cfg = self.cfg.effective(rule.collection) catch continue;
+        // Each assigned collection once, including those schedules select now.
+        var names: std.ArrayList([]const u8) = .empty;
+        for (self.cfg.outputs) |rule| if (self.assignedCollection(rule.output)) |name| if (!u.contains(names.items, name)) {
+            try names.append(self.a, name);
+        };
+        for (names.items) |name| {
+            const cfg = self.cfg.effective(name) catch continue;
             if (cfg.interval == 0) continue;
-            const due = self.state.dueFor(rule.collection) orelse {
-                try self.resetCollectionTimer(rule.collection);
+            const due = self.state.dueFor(name) orelse {
+                try self.resetCollectionTimer(name);
                 continue;
             };
             if (self.now() < due) continue;
             if (connected == null) connected = try self.current();
             var filter: std.ArrayList(u8) = .empty;
-            for (connected.?) |entry| if (self.cfg.assignedCollection(entry.output)) |name| if (u.eql(name, rule.collection)) {
+            for (connected.?) |entry| if (self.assignedCollection(entry.output)) |assigned_name| if (u.eql(assigned_name, name)) {
                 if (filter.items.len > 0) try filter.append(self.a, ',');
                 try filter.appendSlice(self.a, entry.output);
             };
             if (filter.items.len == 0) {
-                try self.resetCollectionTimer(rule.collection);
+                try self.resetCollectionTimer(name);
                 continue;
             }
             const was_dirty = self.dirty;
             self.dirty = false;
             self.rotateAssigned(true, filter.items, false) catch |err| {
-                try self.print("rotation {s}: {s}\n", .{ rule.collection, if (u.diagnostic.len > 0) u.diagnostic else @errorName(err) });
+                try self.print("rotation {s}: {s}\n", .{ name, if (u.diagnostic.len > 0) u.diagnostic else @errorName(err) });
                 u.diagnostic = "";
             };
             if (!self.dirty) stalled = true;
@@ -767,26 +940,15 @@ pub const Engine = struct {
         const arg = if (req.args.len > 0) req.args[0] else "";
         switch (req.action) {
             .schedule => {
-                if (u.eql(arg, "resume")) {
-                    if (self.cfg.schedule.len == 0) return error.NoScheduleConfigured;
-                    // Use a clean engine so dirty from this control change does
-                    // not disguise a failed wallpaper application.
-                    var scheduled = self.*;
-                    scheduled.state.schedule_cursor = null;
-                    const changed = scheduled.applySchedule() catch |err| {
-                        if (scheduled.dirty) {
-                            self.* = scheduled;
-                        } else {
-                            self.message = scheduled.message;
-                        }
-                        return err;
-                    };
-                    _ = changed;
-                    self.* = scheduled;
-                    // Releasing a manual override persists even when held.
-                    self.dirty = true;
-                    try self.print("following schedule (holds still apply)\n", .{});
-                } else try self.showSchedule(req.json);
+                if (!u.eql(arg, "resume")) return self.showSchedule(req.json);
+                if (req.output) |output| return self.resumeOutput(output);
+                if (self.cfg.schedule.len == 0 and self.cfg.schedules.len == 0) return error.NoScheduleConfigured;
+                if (self.cfg.schedule.len > 0) try self.resumeGlobal();
+                if (self.assignments() and self.cfg.schedules.len > 0) {
+                    const connected = try self.current();
+                    for (self.cfg.schedules) |schedule| try self.switchScheduled(schedule.name, (try self.namedWindow(schedule.name)).?, connected, null);
+                }
+                try self.print("following schedule (holds still apply)\n", .{});
             },
             .use => {
                 _ = self.cfg.effective(arg) catch return u.fail(self.a, "unknown collection '{s}'; run 'zpaper collections'", .{arg});
@@ -817,7 +979,7 @@ pub const Engine = struct {
                 for (names.items) |name| {
                     const cfg = try self.cfg.effective(name);
                     var assigned_outputs: std.ArrayList([]const u8) = .empty;
-                    if (self.assignments()) for (self.cfg.outputs) |rule| if (u.eql(rule.collection, name)) {
+                    if (self.assignments()) for (self.cfg.outputs) |rule| if (u.eql(self.assignedCollection(rule.output) orelse "", name)) {
                         try assigned_outputs.append(self.a, rule.output);
                     };
                     try entries.append(self.a, .{ .name = name, .active = u.eql(name, self.collectionName()), .dir = cfg.dir, .wallpaper = cfg.wallpaper, .interval_seconds = cfg.interval, .recursive = cfg.recursive, .outputs = try assigned_outputs.toOwnedSlice(self.a) });
@@ -887,7 +1049,7 @@ pub const Engine = struct {
                         .interval_seconds = interval,
                         .collection = self.collectionName(),
                         .collection_available = cfg != null,
-                        .output_collections = if (self.assignments()) self.cfg.outputs else &.{},
+                        .output_collections = try self.outputCollections(),
                         .collection_due = if (self.assignments()) self.state.collection_due else &.{},
                         .schedule = try self.scheduleInfo(),
                     }, .{})});
@@ -897,7 +1059,7 @@ pub const Engine = struct {
                     const schedule_info = try self.scheduleInfo();
                     if (self.outputsIgnored()) |note| try self.print("{s}\n", .{note});
                     if (schedule_info.enabled) try self.print("schedule: {s}{s}\n", .{ schedule_info.current.?.collection, if (schedule_info.manual_override) " (manual choice until next change)" else if (schedule_info.pending) " (pending)" else "" });
-                    for (actual) |entry| try self.print("{s}: {s}{s}\n", .{ entry.output, if (entry.image.len == 0) "(no image)" else entry.image, if (self.assigned(entry.output)) try std.fmt.allocPrint(self.a, " [collection {s}]", .{self.collectionFor(entry.output)}) else "" });
+                    for (actual) |entry| try self.print("{s}: {s}{s}\n", .{ entry.output, if (entry.image.len == 0) "(no image)" else entry.image, try self.assignmentLabel(entry.output) });
                     for (self.state.holds) |h| if (h.until == -1 or h.until > self.now()) {
                         try self.print("hold {s}: {s}\n", .{ h.output, if (h.until == -1) "until resumed" else try std.fmt.allocPrint(self.a, "{d}s remaining", .{h.until - self.now()}) });
                     };
@@ -909,7 +1071,7 @@ pub const Engine = struct {
                     if (self.assignments()) for (self.state.collection_due) |entry| {
                         const assigned_cfg = self.cfg.effective(entry.name) catch continue;
                         var in_use = false;
-                        for (self.cfg.outputs) |rule| if (u.eql(rule.collection, entry.name)) {
+                        for (self.cfg.outputs) |rule| if (u.eql(self.assignedCollection(rule.output) orelse "", entry.name)) {
                             in_use = true;
                         };
                         if (!in_use or assigned_cfg.interval == 0) continue;

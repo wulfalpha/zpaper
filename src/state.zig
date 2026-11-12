@@ -10,8 +10,11 @@ pub const Image = struct { time: []const u8, path: []const u8 };
 pub const Hold = struct { output: []const u8 = "*", until: i64 = -1 };
 pub const Due = struct { name: []const u8, due: i64 };
 pub const Progress = struct { name: []const u8, seen: []const []const u8 = &.{} };
+// Progress of a named [schedule.NAME]: the last period handled and the
+// collection it switched its monitors to.
+pub const ScheduleCursor = struct { name: []const u8, cursor: scheduling.Cursor, collection: []const u8 };
 pub const State = struct {
-    version: u32 = 4,
+    version: u32 = 5,
     schedule_cursor: ?scheduling.Cursor = null,
     collection: ?[]const u8 = null,
     collection_progress: []const Progress = &.{},
@@ -27,6 +30,29 @@ pub const State = struct {
     // Rotation deadlines for collections assigned to outputs ([output.NAME]);
     // next_due stays the active collection's deadline.
     collection_due: []const Due = &.{},
+    // Per-monitor schedules ([schedule.NAME]); schedule_cursor stays the
+    // global [schedule]'s.
+    schedule_cursors: []const ScheduleCursor = &.{},
+
+    pub fn scheduleCursor(self: State, name: []const u8) ?ScheduleCursor {
+        for (self.schedule_cursors) |entry| if (u.eql(entry.name, name)) return entry;
+        return null;
+    }
+    pub fn setScheduleCursor(self: *State, a: u.A, value: ScheduleCursor) !void {
+        var entries: std.ArrayList(ScheduleCursor) = .empty;
+        for (self.schedule_cursors) |entry| if (!u.eql(entry.name, value.name)) {
+            try entries.append(a, entry);
+        };
+        try entries.append(a, value);
+        self.schedule_cursors = try entries.toOwnedSlice(a);
+    }
+    pub fn clearScheduleCursor(self: *State, a: u.A, name: []const u8) !void {
+        var entries: std.ArrayList(ScheduleCursor) = .empty;
+        for (self.schedule_cursors) |entry| if (!u.eql(entry.name, name)) {
+            try entries.append(a, entry);
+        };
+        self.schedule_cursors = try entries.toOwnedSlice(a);
+    }
 
     pub fn dueFor(self: State, name: []const u8) ?i64 {
         for (self.collection_due) |entry| if (u.eql(entry.name, name)) return entry.due;
@@ -144,8 +170,8 @@ pub fn load(rt: Runtime, a: u.A, path: []const u8) !State {
         return err;
     };
     var state = try std.json.parseFromSliceLeaky(State, a, bytes, .{ .allocate = .alloc_always });
-    if (state.version < 1 or state.version > 4) return error.UnsupportedStateVersion;
-    state.version = 4;
+    if (state.version < 1 or state.version > 5) return error.UnsupportedStateVersion;
+    state.version = 5;
     if ((state.layouts.len > 0 and state.cursor >= state.layouts.len) or (state.layouts.len == 0 and state.cursor != 0)) return error.InvalidStateCursor;
     return state;
 }

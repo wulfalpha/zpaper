@@ -108,10 +108,11 @@ repeat. Relative legacy paths are skipped because their original working directo
 is unknown. The shell script's `wallpaper_state` is a **previous** layout, so it is
 not imported as the current desktop. Old Zig flat state is also left untouched.
 
-Version 1, 2 and 3 state files are read automatically and upgraded to version 4 on
+Version 1 to 4 state files are read automatically and upgraded to version 5 on
 the next successful state write, preserving history, holds, collection selection,
 and shuffle progress. Version 3 added the scheduled-period cursor and manual
-override; version 4 adds rotation timers for collections assigned to outputs.
+override; version 4 added rotation timers for collections assigned to outputs;
+version 5 adds the progress of each per-monitor schedule.
 Older zpaper binaries cannot read newer state versions.
 
 State lives at `$XDG_STATE_HOME/zpaper/state.json`, defaulting to

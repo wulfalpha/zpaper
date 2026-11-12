@@ -967,7 +967,7 @@ class Integration(unittest.TestCase):
         path.write_text(json.dumps(old))
         self.cmd('next')
         updated = self.state()
-        self.assertEqual(updated['version'], 4)
+        self.assertEqual(updated['version'], 5)
         self.assertEqual(updated['collection'], 'default')
         self.assertEqual(len(updated['seen']), 2)
         self.assertIn(old['seen'][0], updated['seen'])
@@ -1058,7 +1058,7 @@ class Integration(unittest.TestCase):
         self.assertEqual(self.shown()['HDMI-A-1'], kept)
         status = json.loads(self.cmd('status', '--json').stdout)
         self.assertEqual(status['collection'], 'quiet')
-        self.assertEqual(status['output_collections'], [{'output': 'HDMI-A-1', 'collection': 'work'}])
+        self.assertEqual(status['output_collections'], [{'output': 'HDMI-A-1', 'collection': 'work', 'schedule': None}])
         listing = self.cmd('collections').stdout
         self.assertIn('outputs HDMI-A-1', listing)
 
@@ -1128,6 +1128,125 @@ class Integration(unittest.TestCase):
         self.config(extra='setter = custom-setter %s\n' + self.collection_sections
                     + '[output.DP-1]\ncollection = work\n', backend='custom')
         self.assertIn('a custom setter sets one wallpaper', self.cmd('check').stdout)
+
+    def output_schedule(self, global_rule=None, backend='awww', output='HDMI-A-1'):
+        # HDMI-A-1 follows [schedule.ext], which selects work all day.
+        self.make_collections()
+        extra = self.collection_sections + f'[schedule.ext]\n00:00 = work\n[output.{output}]\nschedule = ext\n'
+        if global_rule:
+            extra += f'[schedule]\n00:00 = {global_rule}\n'
+        self.config(extra=extra, backend=backend)
+
+    def stale_output_schedule(self, collection='quiet'):
+        # As if the schedule last switched to `collection` days ago.
+        path = self.root / 'state' / 'zpaper' / 'state.json'
+        saved = self.state()
+        saved['schedule_cursors'] = [{'name': 'ext', 'collection': collection,
+                                      'cursor': {'key': 0, 'fingerprint': 0, 'manual': False}}]
+        path.write_text(json.dumps(saved))
+
+    def ext_cursor(self):
+        if not (self.root / 'state' / 'zpaper' / 'state.json').exists():
+            return None
+        return next((c for c in self.state().get('schedule_cursors', []) if c['name'] == 'ext'), None)
+
+    def test_output_schedule_selects_collection(self):
+        self.output_schedule()
+        self.cmd('next')
+        self.assertIn(self.shown()['HDMI-A-1'], self.work_pics)
+        self.assertIn(self.shown()['DP-1'], self.pics)
+        self.assertIn('[schedule ext: work]', self.cmd('status').stdout)
+        status = json.loads(self.cmd('status', '--json').stdout)
+        self.assertEqual(status['output_collections'], [{'output': 'HDMI-A-1', 'collection': 'work', 'schedule': 'ext'}])
+        listing = json.loads(self.cmd('schedule', '--json').stdout)
+        self.assertEqual(listing['schedules'][0]['name'], 'ext')
+        self.assertEqual(listing['schedules'][0]['outputs'], ['HDMI-A-1'])
+        self.assertIn('schedule ext (HDMI-A-1)', self.cmd('schedule').stdout)
+
+    def test_output_schedule_switches_at_scheduled_time(self):
+        self.output_schedule()
+        self.cmd('set', self.pics[2], self.pics[3])
+        self.stale_output_schedule()
+        self.start()
+        self.assertTrue(self.wait_for(lambda: self.shown()['HDMI-A-1'] in self.work_pics), self.shown())
+        self.assertEqual(self.shown()['DP-1'], self.pics[2])
+        self.assertTrue(self.wait_for(lambda: (self.ext_cursor() or {}).get('collection') == 'work'))
+        self.assertFalse(self.ext_cursor()['cursor']['manual'])
+
+    def test_output_schedule_first_check_only_records(self):
+        self.output_schedule()
+        # Images already on screen; no manual change has recorded the schedule.
+        self.display.write_text(json.dumps({'DP-1': self.pics[2], 'HDMI-A-1': self.pics[3]}))
+        self.assertIsNone(self.ext_cursor())
+        self.start()
+        self.assertTrue(self.wait_for(lambda: self.ext_cursor() is not None))
+        time.sleep(1)
+        self.assertEqual(self.shown(), {'DP-1': self.pics[2], 'HDMI-A-1': self.pics[3]})
+
+    def test_output_schedule_held_output_stays_pending(self):
+        self.output_schedule()
+        self.cmd('set', self.pics[2], self.pics[3])
+        self.stale_output_schedule()
+        self.cmd('hold', '--output', 'HDMI-A-1')
+        self.start()
+        time.sleep(1.5)
+        self.assertEqual(self.shown()['HDMI-A-1'], self.pics[3])
+        status = json.loads(self.cmd('schedule', '--json').stdout)['schedules'][0]['status']
+        self.assertTrue(status['pending'] and status['held'])
+        self.cmd('resume', '--output', 'HDMI-A-1')
+        self.assertTrue(self.wait_for(lambda: self.shown()['HDMI-A-1'] in self.work_pics), self.shown())
+
+    def test_schedule_resume_output(self):
+        self.output_schedule()
+        self.cmd('set', self.pics[2], self.pics[3])
+        self.assertIn('HDMI-A-1 follows schedule ext again', self.cmd('schedule', 'resume', '--output', 'HDMI-A-1').stdout)
+        self.assertIn(self.shown()['HDMI-A-1'], self.work_pics)
+        self.assertEqual(self.shown()['DP-1'], self.pics[2])
+        # DP-1 follows the active collection, and there is no global schedule.
+        self.assertIn('NoScheduleConfigured', self.cmd('schedule', 'resume', '--output', 'DP-1', ok=False).stderr)
+        self.cmd('schedule', 'resume', '--output', 'DP-9', ok=False)
+        self.cmd('schedule', '--output', 'HDMI-A-1', ok=False)
+
+    def test_schedule_resume_output_with_fixed_collection_fails(self):
+        self.assign_outputs(**{'HDMI-A-1': 'work'})
+        self.cfg.write_text(self.cfg.read_text() + '[schedule]\n00:00 = quiet\n')
+        self.assertIn('fixed collection', self.cmd('schedule', 'resume', '--output', 'HDMI-A-1', ok=False).stderr)
+
+    def test_schedule_resume_all_includes_output_schedules(self):
+        self.output_schedule(global_rule='quiet')
+        self.cmd('set', self.pics[2], self.pics[3])
+        self.cmd('schedule', 'resume')
+        self.assertIn(self.shown()['DP-1'], self.quiet_pics)
+        self.assertIn(self.shown()['HDMI-A-1'], self.work_pics)
+
+    def test_manual_change_overrides_only_that_outputs_schedule(self):
+        self.output_schedule(global_rule='quiet')
+        self.cmd('schedule', 'resume')
+        global_cursor = self.state()['schedule_cursor']
+        self.cmd('set', self.pics[0], '--output', 'HDMI-A-1')
+        self.assertTrue(self.ext_cursor()['cursor']['manual'])
+        self.assertEqual(self.state()['schedule_cursor'], global_cursor)
+        self.assertIn('schedule ext (HDMI-A-1): local time; manual choice', self.cmd('schedule').stdout)
+
+    def test_reload_onto_schedule_switches_once(self):
+        self.assign_outputs(**{'HDMI-A-1': 'quiet'})
+        self.cmd('set', self.pics[2], self.pics[3])
+        self.start()
+        self.output_schedule()
+        self.cmd('reload')
+        self.assertIn(self.shown()['HDMI-A-1'], self.work_pics)
+        self.assertEqual(self.ext_cursor()['collection'], 'work')
+        shown = self.shown()
+        time.sleep(1.5)
+        self.assertEqual(self.shown(), shown)
+
+    def test_output_schedule_with_feh(self):
+        self.output_schedule(backend='feh', output='HDMI-1')
+        self.monitors(self.EDP, self.HDMI)
+        self.cmd('next')
+        call = self.feh_calls()[-1]
+        self.assertIn(call[2], self.pics)
+        self.assertIn(call[3], self.work_pics)
 
     def test_schedule_startup_and_inspection(self):
         self.enable_schedule()
@@ -1398,7 +1517,7 @@ time.sleep(30)
         path.write_text(json.dumps(old))
         self.cmd('hold')
         updated = self.state()
-        self.assertEqual(updated['version'], 4)
+        self.assertEqual(updated['version'], 5)
         self.assertEqual(updated['collection'], old['collection'])
         self.assertEqual(updated['collection_progress'], old['collection_progress'])
         self.assertEqual(updated['current'], old['current'])

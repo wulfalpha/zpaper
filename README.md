@@ -21,7 +21,8 @@ which monitor, and keeps track of everything you've picked.
 - **Favorites and exclusions** without touching your files
 - **Named collections** (separate image folders, each with its own interval and
   shuffle progress), assignable per monitor
-- **Daily schedule**: switch collections at set times of day
+- **Daily schedules**: switch collections at set times of day, for all monitors
+  or with a separate timetable per monitor
 - Single binary, no shell evaluation, scriptable JSON output
 
 ## Requirements

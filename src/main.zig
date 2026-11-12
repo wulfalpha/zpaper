@@ -35,7 +35,7 @@ const help = "zpaper " ++ version ++ " — wallpaper rotation with memory\n" ++
     \\  exclude [IMAGE...] | include [IMAGE...]
     \\  collections               List collections (* marks the active one)
     \\  use NAME                  Switch collection until the next schedule change
-    \\  schedule [resume]         Inspect schedule / return to it (respecting holds)
+    \\  schedule [resume]         Inspect schedules / return to them (respecting holds)
     \\  list [NAME]               List images in the active or named collection
     \\  restore | refresh         Reapply saved layout, or choose if none saved
     \\  import-legacy [DIR]       Import script history/favorites (default ~/.cache)
@@ -46,7 +46,7 @@ const help = "zpaper " ++ version ++ " — wallpaper rotation with memory\n" ++
     \\
     \\--json: current, status, history, layouts, favorites, list, collections, schedule.
     \\--output: set, next, hold, resume, select, favorite/unfavorite, exclude/include,
-    \\          random-favorite. Per-output control requires awww or swww.
+    \\          random-favorite, schedule resume. Needs awww, swww, or feh with xrandr.
     \\Legacy --next, --undo, --history, --favorite, etc. remain aliases.
     \\No command means 'next', or 'daemon' when daemon=true in config.
     \\interval=0 disables automatic rotation; daemon runs in the foreground.
@@ -131,8 +131,9 @@ fn validate(req: Request) !void {
     }
     if (req.action == .schedule and count == 1 and !u.eql(req.args[0], "resume")) return error.ExpectedScheduleResume;
     if (req.action == .schedule and count == 1 and req.json) return error.JsonNotApplicable;
+    if (req.action == .schedule and count == 0 and req.output != null) return error.OutputNotApplicable;
     if (req.output != null) switch (req.action) {
-        .set, .next, .hold, .@"resume", .select, .favorite, .unfavorite, .exclude, .include, .random_favorite => {},
+        .set, .next, .hold, .@"resume", .select, .favorite, .unfavorite, .exclude, .include, .random_favorite, .schedule => {},
         else => return error.OutputNotApplicable,
     };
     if (req.json) switch (req.action) {
@@ -217,6 +218,7 @@ fn daemonLoop(rt: Runtime, a: u.A, paths: ipc.Paths, cfg_path: []const u8, requi
     }
     var retry_at: i64 = 0;
     var schedule_retry_at: i64 = 0;
+    var output_schedule_retry_at: i64 = 0;
     // Connected outputs from the last hotplug check, kept across ticks.
     var outputs_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer outputs_arena.deinit();
@@ -296,6 +298,7 @@ fn daemonLoop(rt: Runtime, a: u.A, paths: ipc.Paths, cfg_path: []const u8, requi
                         cfg = updated;
                         retry_at = 0;
                         schedule_retry_at = 0;
+                        output_schedule_retry_at = 0;
                         break :blk .{ .ok = true, .message = message };
                     },
                     .check => break :blk .{ .ok = true, .message = "active configuration is valid\n" },
@@ -330,6 +333,12 @@ fn daemonLoop(rt: Runtime, a: u.A, paths: ipc.Paths, cfg_path: []const u8, requi
         } else if (!forced and now < schedule_retry_at) {
             scheduled = true;
         }
+        // Per-monitor schedules never block the active collection's rotation.
+        if (now >= output_schedule_retry_at) e.applyOutputSchedules() catch |err| {
+            std.log.err("schedule: {s}", .{if (u.diagnostic.len > 0) u.diagnostic else @errorName(err)});
+            u.diagnostic = "";
+            output_schedule_retry_at = now + 5;
+        };
         if (cfg.hotplug and now >= hotplug_at) {
             if (e.reconcile(known_outputs)) |names| {
                 var replacement = std.heap.ArenaAllocator.init(std.heap.page_allocator);
