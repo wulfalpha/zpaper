@@ -3,6 +3,8 @@
 ## Unreleased
 
 ### Added
+- Reproducible README animation with a static preview and CLI transcript, plus a
+  complete two-monitor example configuration included in release archives.
 - Responsive daemon socket handling with a bounded FIFO worker queue. `status`
   returns the last completed snapshot with `busy`, `starting`, and `snapshot_time` fields.
 - Stop/restart and termination signals cancel in-flight renderer process groups,

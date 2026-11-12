@@ -4,6 +4,11 @@ A small Linux wallpaper daemon that remembers your choices. Renderers such as
 awww, swww and feh draw wallpapers; zpaper decides what to show, when, and on
 which monitor, and keeps track of everything you've picked.
 
+![zpaper demo: independent monitor collections, rotation, undo, picker, and holds](docs/media/demo.gif)
+
+Real CLI commands with isolated mock displays and generated placeholder images.
+[Static preview](docs/media/demo.png) · [Reproduce the demo](docs/demo.md)
+
 ## Features
 
 - **Shuffle rotation** that goes through every image once before repeating, and
@@ -75,6 +80,27 @@ cp contrib/completions/zpaper.fish ~/.config/fish/completions/
 
 Start `zpaper daemon` from your window manager's autostart, or use the systemd user
 unit in [contrib/zpaper.service](contrib/zpaper.service).
+
+## Two monitors, two collections
+
+The [complete two-monitor example](contrib/two-monitors.zpaperc) assigns landscapes
+to `DP-1` every 30 minutes and portraits to `HDMI-A-1` every 45 minutes. Adjust the
+folders and connector names (`zpaper current` lists them), then use it as your
+configuration. It works with awww/swww or feh with xrandr.
+
+```sh
+zpaper check
+zpaper daemon
+# In another terminal:
+zpaper next --output DP-1
+zpaper previous
+zpaper-pick --browse
+zpaper hold 2h --output HDMI-A-1
+zpaper explain --output HDMI-A-1
+```
+
+`previous` restores the whole previous layout. A per-output hold pauses automatic
+changes there; explicit commands remain available.
 
 ## Everyday commands
 

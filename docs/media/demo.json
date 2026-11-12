@@ -1,0 +1,65 @@
+[
+  {
+    "title": "Two monitors. Independent collections.",
+    "command": "zpaper next",
+    "stdout": "DP-1: demo/landscapes/dunes.png\nHDMI-A-1: demo/portraits/iris.png\n",
+    "display": {
+      "DP-1": "landscapes/dunes.png",
+      "HDMI-A-1": "portraits/iris.png"
+    },
+    "picker": null
+  },
+  {
+    "title": "Rotate just the landscape monitor.",
+    "command": "zpaper next --output DP-1",
+    "stdout": "DP-1: demo/landscapes/alpine.png\n",
+    "display": {
+      "DP-1": "landscapes/alpine.png",
+      "HDMI-A-1": "portraits/iris.png"
+    },
+    "picker": null
+  },
+  {
+    "title": "Undo restores the previous desktop layout.",
+    "command": "zpaper previous",
+    "stdout": "DP-1: demo/landscapes/dunes.png\nHDMI-A-1: demo/portraits/iris.png\n",
+    "display": {
+      "DP-1": "landscapes/dunes.png",
+      "HDMI-A-1": "portraits/iris.png"
+    },
+    "picker": null
+  },
+  {
+    "title": "Pick a monitor, then an image.",
+    "command": "zpaper-pick --browse",
+    "stdout": "HDMI-A-1: demo/portraits/fern.png\n",
+    "display": {
+      "DP-1": "landscapes/dunes.png",
+      "HDMI-A-1": "portraits/fern.png"
+    },
+    "picker": [
+      "Monitor> HDMI-A-1",
+      "Image>   fern.png  (collection portraits)"
+    ]
+  },
+  {
+    "title": "Keep one monitor steady for two hours.",
+    "command": "zpaper hold 2h --output HDMI-A-1",
+    "stdout": "held HDMI-A-1 for 7200s\n",
+    "display": {
+      "DP-1": "landscapes/dunes.png",
+      "HDMI-A-1": "portraits/fern.png"
+    },
+    "picker": null
+  },
+  {
+    "title": "See the policy behind each output.",
+    "command": "zpaper explain --output HDMI-A-1",
+    "stdout": "Recorded wallpapers and current policy (connection status is not reported).\nHDMI-A-1:\n  recorded image: demo/portraits/fern.png\n  collection: portraits (fixed output assignment)\n  held for 7200s more; automatic changes wait for expiry or resume\n  interval rotation: every 2700s; due in 2700s (held)\n",
+    "display": {
+      "DP-1": "landscapes/dunes.png",
+      "HDMI-A-1": "portraits/fern.png"
+    },
+    "picker": null
+  }
+]

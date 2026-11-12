@@ -1,0 +1,26 @@
+# Copy to ~/.config/zpaper/zpaperc, then edit paths and connector names.
+# Discover connector names with: zpaper current
+# Start with: zpaper check && zpaper daemon
+backend = auto
+backend_start = true
+hotplug = true
+resize = crop
+timeout = 15s
+recursive = true
+interval = 30m
+collection = landscapes
+
+# A monitor without an [output.NAME] assignment follows the active collection.
+[collection.landscapes]
+dir = ~/Pictures/Wallpapers/landscapes
+interval = 30m
+
+[collection.portraits]
+dir = ~/Pictures/Wallpapers/portraits
+interval = 45m
+
+[output.DP-1]
+collection = landscapes
+
+[output.HDMI-A-1]
+collection = portraits
