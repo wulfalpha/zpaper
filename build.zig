@@ -11,6 +11,13 @@ pub fn build(b: *std.Build) void {
     mod.addOptions("build_options", options);
     const exe = b.addExecutable(.{ .name = "zpaper", .root_module = mod, .use_lld = true, .use_llvm = true });
     b.installArtifact(exe);
+    const benchmark = b.addExecutable(.{ .name = "zpaper-benchmark", .root_module = b.createModule(.{
+        .root_source_file = b.path("src/benchmark.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    }), .use_lld = true, .use_llvm = true });
+    b.step("bench", "Benchmark shuffle selection at 1k, 10k and 50k images").dependOn(&b.addRunArtifact(benchmark).step);
     const run = b.addRunArtifact(exe);
     if (b.args) |args| run.addArgs(args);
     b.step("run", "Run zpaper").dependOn(&run.step);

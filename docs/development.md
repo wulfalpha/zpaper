@@ -37,6 +37,30 @@ zig build -Doptimize=ReleaseSafe
 python3 tests/integration.py
 ```
 
+## Shuffle benchmark
+
+Run `zig build bench -Doptimize=ReleaseSafe`. The synthetic benchmark measures
+only `State.choose`: 1,000, 10,000 and 50,000 paths, 10% excluded, with half or
+all paths previously seen. It reports the median of three selections and request
+arena capacity; directory traversal, JSON persistence, and rendering are excluded.
+
+Local x86_64 results with Zig 0.16.0, ReleaseSafe (milliseconds; machine-dependent):
+
+| Images | Progress | Before | Hash sets |
+| ---: | --- | ---: | ---: |
+| 1,000 | Half seen | 1.809 | 0.200 |
+| 1,000 | Cycle end | 2.694 | 0.254 |
+| 10,000 | Half seen | 184.303 | 2.317 |
+| 10,000 | Cycle end | 274.771 | 2.053 |
+| 50,000 | Half seen | 5,073.128 | 11.659 |
+| 50,000 | Cycle end | 7,664.761 | 15.532 |
+
+Temporary hash sets make membership checks approximately linear in library size
+while retaining the ordered paths in saved state. The tradeoff is temporary memory:
+at 50,000 paths, arena capacity was 12–14 MiB versus 6–9 MiB before. The arena is
+released after each request. Directory caching is not needed for this change;
+new and removed files remain visible on the next scan.
+
 ## Releasing
 
 1. Update `.version` in `build.zig.zon` and add a matching `## X.Y.Z` section to

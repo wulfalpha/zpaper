@@ -8,6 +8,9 @@
 - Release validation checks the README install version as well as the release tag.
 
 ### Changed
+- Shuffle selection uses temporary hash sets for large libraries; the persisted
+  state format and successful-application semantics are unchanged. Added
+  `zig build bench -Doptimize=ReleaseSafe` for repeatable scaling measurements.
 - Output selection and scheduling decisions now live in a pure policy module,
   shared by rotation planning and explanations; backend application and successful
   state commits remain in the engine.

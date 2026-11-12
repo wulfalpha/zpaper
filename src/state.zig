@@ -119,16 +119,27 @@ pub const State = struct {
     }
     pub fn choose(self: *State, rt: Runtime, a: u.A, name: []const u8, candidates: []const []const u8) ![]const u8 {
         const previous_seen = self.seenFor(name);
+        // Keep persisted progress as ordered paths, but use request-local sets
+        // for membership. Large collections otherwise require quadratic scans.
+        var excluded: std.StringHashMapUnmanaged(void) = .empty;
+        defer excluded.deinit(a);
+        for (self.excluded) |path| try excluded.put(a, path, {});
+        var previous: std.StringHashMapUnmanaged(void) = .empty;
+        defer previous.deinit(a);
+        for (previous_seen) |path| try previous.put(a, path, {});
+        var eligible_set: std.StringHashMapUnmanaged(void) = .empty;
+        defer eligible_set.deinit(a);
         var eligible: std.ArrayList([]const u8) = .empty;
         var remaining: std.ArrayList([]const u8) = .empty;
         for (candidates) |p| {
-            if (u.contains(self.excluded, p) or u.contains(eligible.items, p)) continue;
+            if (excluded.contains(p)) continue;
+            if ((try eligible_set.getOrPut(a, p)).found_existing) continue;
             try eligible.append(a, p);
-            if (!u.contains(previous_seen, p)) try remaining.append(a, p);
+            if (!previous.contains(p)) try remaining.append(a, p);
         }
         if (eligible.items.len == 0) return error.NoImagesFound;
         var seen: std.ArrayList([]const u8) = .empty;
-        for (previous_seen) |path| if (u.contains(eligible.items, path)) {
+        for (previous_seen) |path| if (eligible_set.contains(path)) {
             try seen.append(a, path);
         };
         try self.setSeen(a, name, try seen.toOwnedSlice(a));
@@ -232,4 +243,21 @@ test "collections retain separate shuffle progress" {
     try s.markSeen(a, "quiet", "b");
     try std.testing.expectEqual(@as(usize, 1), original.seenFor("quiet").len);
     try std.testing.expectEqual(@as(usize, 0), s.seen.len);
+}
+
+test "shuffle filters duplicates, exclusions and stale progress without consuming choices" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var s = State{ .seen = &.{ "gone", "old", "excluded" }, .excluded = &.{"excluded"} };
+    const original = s;
+    try std.testing.expectEqualStrings("new", try s.choose(runtime.testing(), a, "default", &.{ "old", "old", "new", "new", "excluded" }));
+    try std.testing.expectEqual(@as(usize, 1), s.seen.len);
+    try std.testing.expectEqualStrings("old", s.seen[0]);
+    try std.testing.expectEqual(@as(usize, 3), original.seen.len);
+    try s.markSeen(a, "default", "new");
+    s.current = &.{.{ .output = "*", .image = "new" }};
+    try std.testing.expectEqualStrings("old", try s.choose(runtime.testing(), a, "default", &.{ "old", "new", "excluded" }));
+    try std.testing.expectEqual(@as(usize, 0), s.seen.len);
+    try std.testing.expectError(error.NoImagesFound, s.choose(runtime.testing(), a, "default", &.{"excluded"}));
 }
